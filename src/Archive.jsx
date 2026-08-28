@@ -617,13 +617,20 @@ function Fits({ pieces, profile, inspo, savedFits, saveFit, removeFit, flash }) 
             .map((i) => "- " + i.vibe)
             .join("\n")}`
         : "";
+      const clothing = pieces.filter((p) => p.category !== "accessory");
+      const accessories = pieces.filter((p) => p.category === "accessory");
+      const clothingSummary = clothing
+        .map((p) => `[${p.id}] ${p.name} — ${p.category}, ${p.color}, ${p.material}. ${p.vibe}`)
+        .join("\n");
+      const accessorySummary = accessories.length
+        ? accessories.map((p) => `[${p.id}] ${p.name} — ${p.color}. ${p.vibe}`).join("\n")
+        : "(none)";
+
       const result = await askClaude(
         [
           {
             type: "text",
-            text: `You are a personal stylist with sharp editorial instincts. Style profile: ${profile}${inspoNotes}\n\nFull closet — every piece available:\n${closetSummary(
-              pieces
-            )}\n\nBuild one outfit for: "${occasion || "an everyday fit"}".\n\nProcess:\n1. Scan every piece above by category. Consider each one honestly against the occasion and style profile.\n2. Select the strongest core combination — tops, bottoms, shoes, outerwear. Aim for 3-5 pieces. Only use pieces from the closet.\n3. Evaluate hats and accessories last and separately. Only suggest one in optional_piece_ids if it genuinely elevates this specific look — not as a default. If no hat or accessory adds value, return an empty array.\n4. Never default to the same signature piece across fits. Rotate the closet.\n\nRespond ONLY with JSON, no markdown: {"title": "evocative 3-5 word fit name", "piece_ids": ["core piece ids — clothes only, no hats or accessories"], "optional_piece_ids": ["id of one hat or accessory worth adding, or empty array []"], "why": "2-3 sentences on why this core combination works for the occasion", "missing": "one piece not in the closet that would elevate this fit, or null"}`,
+            text: `You are a personal stylist with sharp editorial instincts. Style profile: ${profile}${inspoNotes}\n\n— CLOTHING (build the fit exclusively from these) —\n${clothingSummary}\n\n— ACCESSORIES: hats, caps, bags, jewelry (do NOT put these in piece_ids; only suggest one in optional_piece_ids if it truly completes this specific look — default is an empty array) —\n${accessorySummary}\n\nBuild one outfit for: "${occasion || "an everyday fit"}".\n\n1. Pick 3-5 clothing pieces that work together for the occasion, style profile, and color story. Rotate the closet — avoid defaulting to the same pieces every time.\n2. Only after the core fit is done: decide if any single accessory genuinely elevates it. If uncertain, leave optional_piece_ids empty.\n\nRespond ONLY with JSON, no markdown: {"title": "evocative 3-5 word fit name", "piece_ids": ["clothing ids only — absolutely no accessories here"], "optional_piece_ids": ["one accessory id if it genuinely elevates this look, otherwise []"], "why": "2-3 sentences on why this core combination works", "missing": "one piece not in the closet that would elevate this fit, or null"}`,
           },
         ],
         1200

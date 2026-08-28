@@ -621,9 +621,9 @@ function Fits({ pieces, profile, inspo, savedFits, saveFit, removeFit, flash }) 
         [
           {
             type: "text",
-            text: `You are a personal stylist. Style profile: ${profile}${inspoNotes}\n\nCloset:\n${closetSummary(
+            text: `You are a personal stylist with sharp editorial instincts. Style profile: ${profile}${inspoNotes}\n\nFull closet — every piece available:\n${closetSummary(
               pieces
-            )}\n\nBuild one outfit for: "${occasion || "an everyday fit"}". Only use pieces from the closet.\n\nRules:\n- Lead with clothing — tops, bottoms, outerwear, shoes first.\n- Hats and accessories are optional finishing touches, not defaults. Only include one if it genuinely completes this specific look for this specific occasion. Most fits should not include a hat.\n- Avoid defaulting to the same signature piece every time. Rotate through the closet.\n- Aim for 3-5 pieces total unless the occasion calls for more layers.\n\nRespond ONLY with JSON, no markdown: {"title": "evocative 3-5 word fit name", "piece_ids": ["ids used"], "why": "2-3 sentences on why this works for the occasion and style profile", "missing": "one piece not in the closet that would elevate this fit, or null"}`,
+            )}\n\nBuild one outfit for: "${occasion || "an everyday fit"}".\n\nProcess:\n1. Scan every piece above by category. Consider each one honestly against the occasion and style profile.\n2. Select the strongest core combination — tops, bottoms, shoes, outerwear. Aim for 3-5 pieces. Only use pieces from the closet.\n3. Evaluate hats and accessories last and separately. Only suggest one in optional_piece_ids if it genuinely elevates this specific look — not as a default. If no hat or accessory adds value, return an empty array.\n4. Never default to the same signature piece across fits. Rotate the closet.\n\nRespond ONLY with JSON, no markdown: {"title": "evocative 3-5 word fit name", "piece_ids": ["core piece ids — clothes only, no hats or accessories"], "optional_piece_ids": ["id of one hat or accessory worth adding, or empty array []"], "why": "2-3 sentences on why this core combination works for the occasion", "missing": "one piece not in the closet that would elevate this fit, or null"}`,
           },
         ],
         1200
@@ -636,6 +636,7 @@ function Fits({ pieces, profile, inspo, savedFits, saveFit, removeFit, flash }) 
   };
 
   const fitPieces = fit ? pieces.filter((p) => fit.piece_ids?.includes(p.id)) : [];
+  const fitOptional = fit ? pieces.filter((p) => fit.optional_piece_ids?.includes(p.id)) : [];
 
   return (
     <div>
@@ -670,6 +671,21 @@ function Fits({ pieces, profile, inspo, savedFits, saveFit, removeFit, flash }) 
               <GarmentTag key={p.id} piece={p} />
             ))}
           </div>
+          {fitOptional.length > 0 && (
+            <div style={{ marginTop: 14 }}>
+              <div style={{ fontFamily: mono, fontSize: 9, letterSpacing: "0.18em", color: T.faint, marginBottom: 8 }}>
+                OPTIONAL FINISH
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                {fitOptional.map((p) => (
+                  <GarmentTag key={p.id} piece={p} dim />
+                ))}
+              </div>
+              <div style={{ fontFamily: mono, fontSize: 10, color: T.faint, marginTop: 6 }}>
+                Add if it fits the vibe — not essential.
+              </div>
+            </div>
+          )}
           <p style={{ fontSize: 14, lineHeight: 1.65, color: T.stone, marginTop: 16 }}>{fit.why}</p>
           {fit.missing && (
             <div
@@ -715,6 +731,7 @@ function Fits({ pieces, profile, inspo, savedFits, saveFit, removeFit, flash }) 
           </p>
           {savedFits.map((f) => {
             const fp = pieces.filter((p) => f.piece_ids?.includes(p.id));
+            const fo = pieces.filter((p) => f.optional_piece_ids?.includes(p.id));
             return (
               <div
                 key={f.id}
@@ -765,6 +782,23 @@ function Fits({ pieces, profile, inspo, savedFits, saveFit, removeFit, flash }) 
                           borderRadius: 6,
                           border: `1px solid ${T.line}`,
                           flexShrink: 0,
+                        }}
+                      />
+                    ))}
+                    {fo.map((p) => (
+                      <img
+                        key={p.id}
+                        src={p.image}
+                        alt={p.name}
+                        title={p.name + " (optional)"}
+                        style={{
+                          width: 60,
+                          height: 60,
+                          objectFit: "cover",
+                          borderRadius: 6,
+                          border: `1px dashed ${T.faint}`,
+                          flexShrink: 0,
+                          opacity: 0.55,
                         }}
                       />
                     ))}

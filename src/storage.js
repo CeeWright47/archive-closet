@@ -56,6 +56,12 @@ const api = {
         headers: { 'Content-Type': 'application/json' },
         body: value,
       });
+    } else if (key.startsWith('want:')) {
+      await fetch('/api/wants', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: value,
+      });
     } else {
       await fetch('/api/settings', {
         method: 'PUT',
@@ -72,12 +78,12 @@ const api = {
     } else if (key.startsWith('inspo:')) {
       await fetch('/api/inspo/' + encodeURIComponent(key.slice(6)), { method: 'DELETE' });
     } else if (key.startsWith('fit:')) {
-      await fetch('/api/fits/' + encodeURIComponent(key.slice(6)), { method: 'DELETE' });
-    }
+      await fetch('/api/fits/' + encodeURIComponent(key.slice(6)), { method: 'DELETE' });    } else if (key.startsWith('want:')) {
+      await fetch('/api/wants/' + encodeURIComponent(key.slice(5)), { method: 'DELETE' });    }
   },
 
   async list(prefix) {
-    const map = { 'piece:': '/api/pieces', 'inspo:': '/api/inspo', 'fit:': '/api/fits' };
+    const map = { 'piece:': '/api/pieces', 'inspo:': '/api/inspo', 'fit:': '/api/fits', 'want:': '/api/wants' };
     const endpoint = map[prefix];
     if (!endpoint) return { keys: [] };
     const res = await fetch(endpoint);

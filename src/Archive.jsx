@@ -106,6 +106,7 @@ export default function Archive() {
   const [assessment, setAssessment] = useState(null);
   const [savedFits, setSavedFits] = useState([]);
   const [gaps, setGaps] = useState(null);
+  const [wants, setWants] = useState([]);
   const [loaded, setLoaded] = useState(false);
   const [toast, setToast] = useState(null);
   const [anchor, setAnchor] = useState(null);
@@ -163,6 +164,19 @@ export default function Archive() {
       try {
         const g = await window.storage.get("closet-gaps");
         if (g?.value) setGaps(JSON.parse(g.value));
+      } catch (e) {}
+      try {
+        const listing = await window.storage.list("want:");
+        const wantKeys = listing?.keys || [];
+        const loadedWants = [];
+        for (const k of wantKeys) {
+          try {
+            const r = await window.storage.get(k);
+            if (r?.value) loadedWants.push(JSON.parse(r.value));
+          } catch (e) {}
+        }
+        loadedWants.sort((a, b) => b.added - a.added);
+        setWants(loadedWants);
       } catch (e) {}
       setLoaded(true);
     })();
@@ -267,6 +281,33 @@ export default function Archive() {
     } catch (e) {}
   };
 
+  const saveWant = async (want) => {
+    setWants((prev) => [want, ...prev]);
+    try {
+      await window.storage.set("want:" + want.id, JSON.stringify(want));
+    } catch (e) {
+      flash("Filed to session only — storage unavailable");
+    }
+  };
+
+  const removeWant = async (id) => {
+    setWants((prev) => prev.filter((w) => w.id !== id));
+    try {
+      await window.storage.delete("want:" + id);
+    } catch (e) {}
+  };
+
+  const toggleWantOwned = async (id) => {
+    const next = wants.map((w) => w.id === id ? { ...w, owned: !w.owned } : w);
+    setWants(next);
+    const updated = next.find((w) => w.id === id);
+    if (updated) {
+      try {
+        await window.storage.set("want:" + id, JSON.stringify(updated));
+      } catch (e) {}
+    }
+  };
+
   return (
     <div
       style={{
@@ -320,7 +361,7 @@ export default function Archive() {
             setAnchor={setAnchor}
           />
         ) : tab === "scan" ? (
-          <Scan pieces={pieces} profile={profile} flash={flash} />
+          <Scan pieces={pieces} profile={profile} flash={flash} saveWant={saveWant} />
         ) : tab === "gaps" ? (
           <Gaps
             pieces={pieces}
@@ -329,6 +370,9 @@ export default function Archive() {
             gaps={gaps}
             saveGaps={saveGaps}
             toggleGapOwned={toggleGapOwned}
+            wants={wants}
+            removeWant={removeWant}
+            toggleWantOwned={toggleWantOwned}
             flash={flash}
           />
         ) : (
@@ -1071,11 +1115,12 @@ function Fits({ pieces, profile, inspo, savedFits, saveFit, removeFit, flash, an
 
 // ———— SCAN ————
 
-function Scan({ pieces, profile, flash }) {
+function Scan({ pieces, profile, flash, saveWant }) {
   const fileRef = useRef();
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState(null);
   const [scanImg, setScanImg] = useState(null);
+  const [logged, setLogged] = useState(false);
 
   const handleFile = async (e) => {
     const file = e.target.files?.[0];
@@ -1083,6 +1128,7 @@ function Scan({ pieces, profile, flash }) {
     if (!file) return;
     setBusy(true);
     setResult(null);
+    setLogged(false);
     try {
       const image = await compressImage(file);
       setScanImg(image);
@@ -1093,12 +1139,26 @@ function Scan({ pieces, profile, flash }) {
             type: "text",
             text: `You're advising a shopper in a store. Their style profile: ${profile}\n\nTheir closet:\n${
               closetSummary(pieces) || "(empty)"
-            }\n\nJudge the item in the photo against their style and closet. Be honest — skip means skip. Respond ONLY with JSON, no markdown: {"verdict": "cop" | "skip" | "maybe", "score": 1-10 fit with their wardrobe, "take": "2-3 blunt sentences — does it match the profile, does it duplicate anything, what gap does it fill", "pairs_with": ["ids of up to 3 closet pieces it works with"]}`,
+            }\n\nJudge the item in the photo against their style and closet. Be honest — skip means skip. Respond ONLY with JSON, no markdown: {"verdict": "cop" | "skip" | "maybe", "score": 1-10 fit with their wardrobe, "take": "2-3 blunt sentences — does it match the profile, does it duplicate anything, what gap does it fill", "pairs_with": ["ids of up to 3 closet pieces it works with"], "item": "short specific name for this piece e.g. 'Black lug-sole penny loafer'", "price": "rough price range like '$180-240' if inferable from the photo, else null"}`,
           },
         ],
         1200
       );
       setResult(r);
+      if (r.verdict === "cop") {
+        const want = {
+          id: "w" + Date.now(),
+          item: r.item || "Scanned item",
+          reason: r.take,
+          price: r.price || null,
+          score: r.score,
+          image,
+          owned: false,
+          added: Date.now(),
+        };
+        await saveWant(want);
+        setLogged(true);
+      }
     } catch (e) {
       flash("Scan failed — try another angle");
     }
@@ -1135,7 +1195,28 @@ function Scan({ pieces, profile, flash }) {
             </div>
             <div style={{ fontFamily: mono, fontSize: 12, color: T.faint }}>{result.score}/10 closet fit</div>
           </div>
+          {result.item && (
+            <div style={{ fontFamily: serif, fontSize: 18, color: T.bone, marginTop: 4, lineHeight: 1.3 }}>
+              {result.item}
+              {result.price && (
+                <span style={{ fontFamily: mono, fontSize: 12, color: T.faint, marginLeft: 10 }}>{result.price}</span>
+              )}
+            </div>
+          )}
           <p style={{ fontSize: 14, lineHeight: 1.65, color: T.stone, marginTop: 8 }}>{result.take}</p>
+          {logged && (
+            <div style={{
+              display: "flex", alignItems: "center", gap: 8,
+              padding: "10px 12px", borderRadius: 8,
+              border: `1px solid ${T.olive}`, background: "rgba(122,122,82,0.12)",
+              marginTop: 8, animation: "rise .3s ease",
+            }}>
+              <span style={{ color: T.olive, fontSize: 15 }}>✓</span>
+              <span style={{ fontFamily: mono, fontSize: 11, color: T.olive, letterSpacing: "0.05em" }}>
+                Filed in What’s missing with the photo.
+              </span>
+            </div>
+          )}
           {pairs.length > 0 && (
             <>
               <div style={{ fontFamily: mono, fontSize: 10, letterSpacing: "0.2em", color: T.tobacco, margin: "16px 0 8px" }}>
@@ -1156,7 +1237,7 @@ function Scan({ pieces, profile, flash }) {
 
 // ———— GAPS ————
 
-function Gaps({ pieces, profile, inspo, gaps, saveGaps, toggleGapOwned, flash }) {
+function Gaps({ pieces, profile, inspo, gaps, saveGaps, toggleGapOwned, wants, removeWant, toggleWantOwned, flash }) {
   const [busy, setBusy] = useState(false);
   const [expandedIdx, setExpandedIdx] = useState(null);
 
@@ -1170,11 +1251,15 @@ function Gaps({ pieces, profile, inspo, gaps, saveGaps, toggleGapOwned, flash })
       const inspoNotes = inspo.length
         ? `\n\nInspo board — the aesthetic they're building toward:\n${inspo.map((i) => "- " + i.vibe).join("\n")}`
         : "";
+      const unownedWants = wants.filter((w) => !w.owned);
+      const wantsNote = unownedWants.length
+        ? `\n\nAlready shortlisted from scanning (do NOT repeat these — they are already on the user's radar):\n${unownedWants.map((w) => `- ${w.item}`).join("\n")}`
+        : "";
       const result = await askClaude(
         [
           {
             type: "text",
-            text: `You are a wardrobe consultant. Style profile: ${profile}${inspoNotes}\n\nTheir full closet:\n${closetSummary(
+            text: `You are a wardrobe consultant. Style profile: ${profile}${inspoNotes}${wantsNote}\n\nTheir full closet:\n${closetSummary(
               pieces
             )}\n\nFind the gaps between the closet they have and the aesthetic they're building toward. Be ruthless about priority — name only pieces that would unlock multiple new outfits from what they ALREADY own, not a generic wardrobe checklist. Respond ONLY with JSON, no markdown: {"verdict": "one sentence on how complete this wardrobe already is", "items": [{"item": "specific piece e.g. 'black lug-sole penny loafer'", "why": "one sentence — what it unlocks with pieces they own", "price": "rough price range like '$90-150'", "priority": 1-5 where 1 is buy first}], "stop_buying": "one category they already have enough of"}`,
           },
@@ -1202,12 +1287,83 @@ function Gaps({ pieces, profile, inspo, gaps, saveGaps, toggleGapOwned, flash })
         outfits.
       </p>
 
+      {/* ——— SPOTTED IN THE WILD ——— */}
+      {wants.length > 0 && (
+        <div style={{ marginBottom: 28 }}>
+          <div style={{ display: "flex", alignItems: "baseline", gap: 10, marginBottom: 8 }}>
+            <div style={{ fontFamily: mono, fontSize: 10, letterSpacing: "0.2em", color: T.tobacco }}>SPOTTED IN THE WILD</div>
+            <div style={{ fontFamily: mono, fontSize: 10, color: T.faint }}>
+              {wants.filter((w) => w.owned).length}/{wants.length} bought
+            </div>
+          </div>
+          <p style={{ fontSize: 12, color: T.faint, margin: "0 0 12px", lineHeight: 1.5 }}>
+            Everything you scanned and got a cop on. Tap to mark as bought.
+          </p>
+          {wants.map((w) => (
+            <div
+              key={w.id}
+              onClick={() => toggleWantOwned(w.id)}
+              style={{
+                position: "relative",
+                display: "flex",
+                gap: 12,
+                background: T.card,
+                border: `1px solid ${w.owned ? T.olive : T.line}`,
+                borderRadius: 10,
+                padding: "10px 12px",
+                marginBottom: 8,
+                opacity: w.owned ? 0.6 : 1,
+                cursor: "pointer",
+              }}
+            >
+              <div style={{ position: "relative", width: 66, height: 66, flexShrink: 0, borderRadius: 6, overflow: "hidden", background: T.cardUp }}>
+                {w.image && <img src={w.image} alt={w.item} style={{ width: "100%", height: "100%", objectFit: "cover" }} />}
+                {w.owned && (
+                  <div style={{
+                    position: "absolute", inset: 0,
+                    background: "rgba(122,122,82,0.65)",
+                    display: "flex", alignItems: "center", justifyContent: "center",
+                    fontSize: 28, color: "#fff",
+                  }}>✓</div>
+                )}
+              </div>
+              <div style={{ flex: 1, overflow: "hidden", paddingRight: 18 }}>
+                <div style={{
+                  fontSize: 15, color: T.bone, marginBottom: 3, lineHeight: 1.3,
+                  textDecoration: w.owned ? "line-through" : "none",
+                }}>{w.item}</div>
+                <div style={{
+                  fontSize: 12, color: T.stone, lineHeight: 1.5,
+                  display: "-webkit-box",
+                  WebkitLineClamp: 2,
+                  WebkitBoxOrient: "vertical",
+                  overflow: "hidden",
+                }}>{w.reason}</div>
+                <div style={{ fontFamily: mono, fontSize: 10, color: T.faint, marginTop: 5 }}>
+                  {w.score}/10{w.price ? " · " + w.price : ""}
+                </div>
+              </div>
+              <button
+                onClick={(e) => { e.stopPropagation(); removeWant(w.id); }}
+                style={{
+                  position: "absolute", top: 8, right: 8,
+                  width: 22, height: 22, borderRadius: 11,
+                  border: "none", background: "rgba(27,24,21,.7)",
+                  color: T.faint, fontSize: 13, cursor: "pointer",
+                  lineHeight: 1, padding: 0,
+                }}
+              >×</button>
+            </div>
+          ))}
+        </div>
+      )}
+
       {gaps && (
         <div style={{ animation: "rise .3s ease" }}>
           <p style={{ fontSize: 14, lineHeight: 1.65, color: T.stone, margin: "0 0 18px" }}>{gaps.verdict}</p>
 
           <div style={{ display: "flex", alignItems: "baseline", gap: 10, marginBottom: 10 }}>
-            <div style={{ fontFamily: mono, fontSize: 10, letterSpacing: "0.2em", color: T.tobacco }}>THE LIST</div>
+            <div style={{ fontFamily: mono, fontSize: 10, letterSpacing: "0.2em", color: T.tobacco }}>GAPS IN THE ARCHIVE</div>
             <div style={{ fontFamily: mono, fontSize: 10, color: T.faint }}>
               {bought}/{gaps.items.length} acquired
             </div>

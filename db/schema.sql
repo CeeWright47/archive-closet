@@ -34,3 +34,14 @@ CREATE TABLE IF NOT EXISTS settings (
   key   TEXT PRIMARY KEY,
   value TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS wants (
+  id     TEXT PRIMARY KEY,
+  item   TEXT,
+  reason TEXT,
+  price  TEXT,
+  score  INTEGER,
+  image  TEXT,
+  owned  BOOLEAN NOT NULL DEFAULT false,
+  added  BIGINT  NOT NULL
+);

@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <rect width="512" height="512" fill="#1B1815"/>
+  <text
+    x="256" y="370"
+    font-family="Georgia, 'Times New Roman', serif"
+    font-size="300"
+    font-weight="400"
+    text-anchor="middle"
+    fill="#EAE3D6"
+  >A</text>
+  <circle cx="388" cy="358" r="20" fill="#B08D57"/>
+</svg>

@@ -623,7 +623,7 @@ function Fits({ pieces, profile, inspo, savedFits, saveFit, removeFit, flash }) 
             type: "text",
             text: `You are a personal stylist. Style profile: ${profile}${inspoNotes}\n\nCloset:\n${closetSummary(
               pieces
-            )}\n\nBuild one outfit for: "${occasion || "an everyday fit"}". Only use pieces from the closet. Respond ONLY with JSON, no markdown: {"title": "evocative 3-5 word fit name", "piece_ids": ["ids used"], "why": "2-3 sentences on why this works for the occasion and style profile", "missing": "one piece not in the closet that would elevate this fit, or null"}`,
+            )}\n\nBuild one outfit for: "${occasion || "an everyday fit"}". Only use pieces from the closet.\n\nRules:\n- Lead with clothing — tops, bottoms, outerwear, shoes first.\n- Hats and accessories are optional finishing touches, not defaults. Only include one if it genuinely completes this specific look for this specific occasion. Most fits should not include a hat.\n- Avoid defaulting to the same signature piece every time. Rotate through the closet.\n- Aim for 3-5 pieces total unless the occasion calls for more layers.\n\nRespond ONLY with JSON, no markdown: {"title": "evocative 3-5 word fit name", "piece_ids": ["ids used"], "why": "2-3 sentences on why this works for the occasion and style profile", "missing": "one piece not in the closet that would elevate this fit, or null"}`,
           },
         ],
         1200

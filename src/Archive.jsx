@@ -30,6 +30,7 @@ body { margin: 0; }
 ::selection { background: ${T.tobacco}; color: ${T.bg}; }
 @keyframes rise { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
 @keyframes pulse { 0%,100% { opacity: .35; } 50% { opacity: 1; } }
+@keyframes slideUp { from { transform: translateY(100%); } to { transform: translateY(0); } }
 @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
 input:focus, textarea:focus, button:focus-visible { outline: 2px solid ${T.tobacco}; outline-offset: 2px; }
 `;
@@ -107,6 +108,7 @@ export default function Archive() {
   const [gaps, setGaps] = useState(null);
   const [loaded, setLoaded] = useState(false);
   const [toast, setToast] = useState(null);
+  const [anchor, setAnchor] = useState(null);
 
   // load everything once
   useEffect(() => {
@@ -185,6 +187,15 @@ export default function Archive() {
     try {
       await window.storage.delete("piece:" + id);
     } catch (e) {}
+  };
+
+  const updatePiece = async (updated) => {
+    setPieces((prev) => prev.map((p) => p.id === updated.id ? updated : p));
+    try {
+      await window.storage.set("piece:" + updated.id, JSON.stringify(updated));
+    } catch (e) {
+      flash("Saved to session only — storage unavailable");
+    }
   };
 
   const saveProfile = async (text) => {
@@ -287,7 +298,15 @@ export default function Archive() {
             Opening the archive…
           </div>
         ) : tab === "closet" ? (
-          <Closet pieces={pieces} savePiece={savePiece} removePiece={removePiece} flash={flash} />
+          <Closet
+            pieces={pieces}
+            savePiece={savePiece}
+            removePiece={removePiece}
+            updatePiece={updatePiece}
+            profile={profile}
+            flash={flash}
+            onBuildFit={(piece) => { setAnchor(piece); setTab("fits"); }}
+          />
         ) : tab === "fits" ? (
           <Fits
             pieces={pieces}
@@ -297,6 +316,8 @@ export default function Archive() {
             saveFit={saveFit}
             removeFit={removeFit}
             flash={flash}
+            anchor={anchor}
+            setAnchor={setAnchor}
           />
         ) : tab === "scan" ? (
           <Scan pieces={pieces} profile={profile} flash={flash} />
@@ -393,7 +414,7 @@ export default function Archive() {
 
 // ———— shared bits ————
 
-function GarmentTag({ piece, onRemove, dim }) {
+function GarmentTag({ piece, onMenu, dim }) {
   return (
     <div
       style={{
@@ -424,26 +445,28 @@ function GarmentTag({ piece, onRemove, dim }) {
             {piece.name?.[0] || "?"}
           </div>
         )}
-        {onRemove && (
+        {onMenu && (
           <button
-            onClick={() => onRemove(piece.id)}
-            aria-label={"Remove " + piece.name}
+            onClick={() => onMenu(piece)}
+            aria-label={"Options for " + piece.name}
             style={{
               position: "absolute",
               top: 6,
               right: 6,
-              width: 24,
-              height: 24,
-              borderRadius: 12,
+              width: 28,
+              height: 28,
+              borderRadius: 14,
               border: "none",
-              background: "rgba(27,24,21,.8)",
+              background: "rgba(27,24,21,.75)",
+              backdropFilter: "blur(6px)",
               color: T.stone,
-              fontSize: 13,
+              fontSize: 16,
               cursor: "pointer",
               lineHeight: 1,
+              letterSpacing: "0.05em",
             }}
           >
-            ×
+            ⋯
           </button>
         )}
       </div>
@@ -458,6 +481,193 @@ function GarmentTag({ piece, onRemove, dim }) {
         </div>
       </div>
     </div>
+  );
+}
+
+// ———— BOTTOM SHEET ————
+
+function BottomSheet({ piece, pieces, profile, onClose, onRemove, onUpdate, onBuildFit, flash }) {
+  const [view, setView] = useState("menu");
+  const [pairResult, setPairResult] = useState(null);
+  const [pairBusy, setPairBusy] = useState(false);
+  const [editName, setEditName] = useState(piece.name || "");
+  const [editCategory, setEditCategory] = useState(piece.category || "");
+  const [editColor, setEditColor] = useState(piece.color || "");
+  const [editMaterial, setEditMaterial] = useState(piece.material || "");
+
+  const getPairs = async () => {
+    setPairBusy(true);
+    try {
+      const others = pieces.filter((p) => p.id !== piece.id);
+      const result = await askClaude([{
+        type: "text",
+        text: `You are a stylist. Anchor piece: "${piece.name}" — ${piece.category}, ${piece.color}${piece.material ? ", " + piece.material : ""}. ${piece.vibe || ""}\n\nCloset:\n${closetSummary(others)}\n\nIn one sentence, what does this piece want to be worn with? Then pick up to 6 piece IDs from the closet that pair best.\n\nRespond ONLY with JSON, no markdown: {"sentence": "one styling sentence", "pair_ids": ["id1", "id2"]}`,
+      }]);
+      setPairResult(result);
+    } catch (e) {
+      flash("Couldn't get pairs — try again");
+    }
+    setPairBusy(false);
+  };
+
+  const saveEdit = async () => {
+    await onUpdate({
+      ...piece,
+      name: editName.trim() || piece.name,
+      category: editCategory,
+      color: editColor.trim() || piece.color,
+      material: editMaterial.trim(),
+    });
+    flash("Piece updated");
+    onClose();
+  };
+
+  const pairPieces = pairResult ? pieces.filter((p) => pairResult.pair_ids?.includes(p.id)) : [];
+
+  const fieldLabel = (label) => (
+    <div style={{ fontFamily: mono, fontSize: 10, letterSpacing: "0.14em", color: T.faint, marginBottom: 6 }}>{label}</div>
+  );
+  const fieldInput = (value, onChange) => (
+    <input
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      style={{
+        width: "100%", padding: "12px 14px", borderRadius: 8,
+        border: `1px solid ${T.line}`, background: T.cardUp,
+        color: T.bone, fontSize: 14, fontFamily: sans, marginBottom: 12,
+      }}
+    />
+  );
+
+  const menuActions = [
+    { title: "Build a fit around this", desc: "Generates an outfit with this piece as the mandatory centerpiece.", onClick: () => onBuildFit(piece) },
+    { title: "What it pairs with", desc: "AI reads your closet and finds its natural styling partners.", onClick: () => { setView("pairs"); if (!pairResult) getPairs(); } },
+    { title: "Edit details", desc: "Fix the name, category, color, or material.", onClick: () => setView("edit") },
+    { title: "Remove from closet", desc: "Permanently delete this piece from your archive.", onClick: () => setView("confirm"), danger: true },
+  ];
+
+  return (
+    <>
+      <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.55)", zIndex: 200 }} />
+      <div style={{
+        position: "fixed", bottom: 0, left: 0, right: 0, maxHeight: "82vh",
+        background: T.card, borderRadius: "16px 16px 0 0", zIndex: 201,
+        display: "flex", flexDirection: "column",
+        animation: "slideUp .28s ease",
+        border: `1px solid ${T.line}`, borderBottom: "none",
+      }}>
+        {/* drag handle */}
+        <div onClick={onClose} style={{ display: "flex", justifyContent: "center", padding: "12px 0 8px", cursor: "pointer", flexShrink: 0 }}>
+          <div style={{ width: 36, height: 4, borderRadius: 2, background: T.line }} />
+        </div>
+
+        {/* header */}
+        <div style={{ display: "flex", alignItems: "flex-start", gap: 12, padding: "0 16px 14px", flexShrink: 0, borderBottom: `1px solid ${T.line}` }}>
+          <div style={{ width: 56, height: 56, borderRadius: 8, overflow: "hidden", flexShrink: 0, background: T.cardUp, display: "flex", alignItems: "center", justifyContent: "center" }}>
+            {piece.image
+              ? <img src={piece.image} alt={piece.name} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+              : <span style={{ fontFamily: serif, fontSize: 22, color: T.faint }}>{piece.name?.[0] || "?"}</span>}
+          </div>
+          <div style={{ flex: 1, overflow: "hidden" }}>
+            <div style={{ fontFamily: mono, fontSize: 9, letterSpacing: "0.18em", color: T.tobacco, textTransform: "uppercase" }}>{piece.category}</div>
+            <div style={{ fontFamily: serif, fontSize: 20, lineHeight: 1.2, marginTop: 2 }}>{piece.name}</div>
+            <div style={{ fontFamily: mono, fontSize: 10, color: T.faint, marginTop: 3 }}>
+              {piece.color}{piece.material ? " · " + piece.material : ""}
+            </div>
+          </div>
+          <button
+            onClick={view === "menu" ? onClose : () => setView("menu")}
+            aria-label={view === "menu" ? "Close" : "Back"}
+            style={{ border: "none", background: "none", color: T.faint, fontSize: 20, cursor: "pointer", padding: 4, lineHeight: 1, flexShrink: 0 }}
+          >
+            {view === "menu" ? "×" : "←"}
+          </button>
+        </div>
+
+        {/* scrollable body */}
+        <div style={{ overflowY: "auto", flex: 1, padding: "0 16px 40px" }}>
+
+          {/* — menu — */}
+          {view === "menu" && (
+            <div>
+              {menuActions.map(({ title, desc, onClick, danger }) => (
+                <button key={title} onClick={onClick} style={{
+                  width: "100%", textAlign: "left", padding: "15px 0",
+                  border: "none", borderBottom: `1px solid ${T.line}`,
+                  background: "none", cursor: "pointer", fontFamily: sans,
+                }}>
+                  <div style={{ fontSize: 15, color: danger ? T.bad : T.bone }}>{title}</div>
+                  <div style={{ fontSize: 12, color: T.faint, marginTop: 3, lineHeight: 1.4 }}>{desc}</div>
+                </button>
+              ))}
+            </div>
+          )}
+
+          {/* — pairs — */}
+          {view === "pairs" && (
+            <div style={{ paddingTop: 16 }}>
+              {pairBusy && <Thinking label="Finding its partners…" />}
+              {!pairBusy && pairResult && (
+                <>
+                  <p style={{ fontSize: 14, lineHeight: 1.65, color: T.stone, margin: "0 0 16px" }}>{pairResult.sentence}</p>
+                  {pairPieces.length > 0 && (
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8, marginBottom: 16 }}>
+                      {pairPieces.map((p) => <GarmentTag key={p.id} piece={p} />)}
+                    </div>
+                  )}
+                  <Btn onClick={() => onBuildFit(piece)}>Build a full fit from this</Btn>
+                </>
+              )}
+              {!pairBusy && !pairResult && (
+                <div style={{ padding: "24px 0" }}><Btn onClick={getPairs}>Find pairs</Btn></div>
+              )}
+            </div>
+          )}
+
+          {/* — edit — */}
+          {view === "edit" && (
+            <div style={{ paddingTop: 16 }}>
+              {fieldLabel("NAME")}{fieldInput(editName, setEditName)}
+              {fieldLabel("CATEGORY")}
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 14 }}>
+                {CATEGORIES.map((c) => (
+                  <button key={c} onClick={() => setEditCategory(c)} style={{
+                    padding: "6px 12px", borderRadius: 20,
+                    border: `1px solid ${editCategory === c ? T.tobacco : T.line}`,
+                    background: editCategory === c ? T.tobacco : "transparent",
+                    color: editCategory === c ? T.bg : T.stone,
+                    fontFamily: mono, fontSize: 10, letterSpacing: "0.1em",
+                    textTransform: "uppercase", cursor: "pointer",
+                  }}>{c}</button>
+                ))}
+              </div>
+              {fieldLabel("COLOR")}{fieldInput(editColor, setEditColor)}
+              {fieldLabel("MATERIAL")}{fieldInput(editMaterial, setEditMaterial)}
+              <Btn onClick={saveEdit}>Save changes</Btn>
+            </div>
+          )}
+
+          {/* — confirm delete — */}
+          {view === "confirm" && (
+            <div style={{ paddingTop: 24, textAlign: "center" }}>
+              <div style={{ fontFamily: serif, fontSize: 22, marginBottom: 10 }}>Remove this piece?</div>
+              <p style={{ fontSize: 14, color: T.stone, lineHeight: 1.6, margin: "0 0 24px" }}>
+                This permanently deletes <strong style={{ color: T.bone }}>{piece.name}</strong> from your archive. It can't be undone.
+              </p>
+              <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                <button onClick={() => { onRemove(piece.id); onClose(); }} style={{
+                  width: "100%", padding: "14px 16px", borderRadius: 8,
+                  border: "none", background: T.bad, color: T.bone,
+                  fontFamily: mono, fontSize: 12, letterSpacing: "0.12em",
+                  textTransform: "uppercase", cursor: "pointer",
+                }}>Yes, remove it</button>
+                <Btn ghost onClick={() => setView("menu")}>Keep it</Btn>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    </>
   );
 }
 
@@ -495,11 +705,12 @@ function Thinking({ label }) {
 
 // ———— CLOSET ————
 
-function Closet({ pieces, savePiece, removePiece, flash }) {
+function Closet({ pieces, savePiece, removePiece, updatePiece, profile, flash, onBuildFit }) {
   const fileRef = useRef();
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState(null); // {done, total}
   const [filter, setFilter] = useState("all");
+  const [sheetPiece, setSheetPiece] = useState(null);
 
   const handleFiles = async (e) => {
     const files = Array.from(e.target.files || []);
@@ -590,9 +801,22 @@ function Closet({ pieces, savePiece, removePiece, flash }) {
       ) : (
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginTop: 12 }}>
           {shown.map((p) => (
-            <GarmentTag key={p.id} piece={p} onRemove={removePiece} />
+            <GarmentTag key={p.id} piece={p} onMenu={() => setSheetPiece(p)} />
           ))}
         </div>
+      )}
+
+      {sheetPiece && (
+        <BottomSheet
+          piece={sheetPiece}
+          pieces={pieces}
+          profile={profile}
+          flash={flash}
+          onClose={() => setSheetPiece(null)}
+          onRemove={(id) => { removePiece(id); setSheetPiece(null); }}
+          onUpdate={updatePiece}
+          onBuildFit={(p) => { setSheetPiece(null); onBuildFit(p); }}
+        />
       )}
     </div>
   );
@@ -600,13 +824,21 @@ function Closet({ pieces, savePiece, removePiece, flash }) {
 
 // ———— FITS ————
 
-function Fits({ pieces, profile, inspo, savedFits, saveFit, removeFit, flash }) {
+function Fits({ pieces, profile, inspo, savedFits, saveFit, removeFit, flash, anchor, setAnchor }) {
   const [occasion, setOccasion] = useState("");
   const [busy, setBusy] = useState(false);
   const [fit, setFit] = useState(null);
   const [stashed, setStashed] = useState(false);
 
-  const generate = async () => {
+  const anchorConsumed = useRef(false);
+  useEffect(() => {
+    if (!anchor) { anchorConsumed.current = false; return; }
+    if (anchorConsumed.current) return;
+    anchorConsumed.current = true;
+    generate(anchor);
+  }, [anchor?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const generate = async (anchorPiece = anchor) => {
     if (pieces.length < 3) return flash("Add at least 3 pieces first");
     setBusy(true);
     setFit(null);
@@ -630,7 +862,7 @@ function Fits({ pieces, profile, inspo, savedFits, saveFit, removeFit, flash }) 
         [
           {
             type: "text",
-            text: `You are a personal stylist with sharp editorial instincts. Style profile: ${profile}${inspoNotes}\n\n— CLOTHING (build the fit exclusively from these) —\n${clothingSummary}\n\n— ACCESSORIES: hats, caps, bags, jewelry (do NOT put these in piece_ids; only suggest one in optional_piece_ids if it truly completes this specific look — default is an empty array) —\n${accessorySummary}\n\nBuild one outfit for: "${occasion || "an everyday fit"}".\n\n1. Pick 3-5 clothing pieces that work together for the occasion, style profile, and color story. Rotate the closet — avoid defaulting to the same pieces every time.\n2. Only after the core fit is done: decide if any single accessory genuinely elevates it. If uncertain, leave optional_piece_ids empty.\n\nRespond ONLY with JSON, no markdown: {"title": "evocative 3-5 word fit name", "piece_ids": ["clothing ids only — absolutely no accessories here"], "optional_piece_ids": ["one accessory id if it genuinely elevates this look, otherwise []"], "why": "2-3 sentences on why this core combination works", "missing": "one piece not in the closet that would elevate this fit, or null"}`,
+            text: `You are a personal stylist with sharp editorial instincts. Style profile: ${profile}${inspoNotes}${anchorPiece ? `\n\n— MANDATORY ANCHOR —\nThis outfit MUST be built around [${anchorPiece.id}] "${anchorPiece.name}" (${anchorPiece.category}). It MUST appear in piece_ids. Let its color palette and silhouette drive every other selection.` : ""}\n\n— CLOTHING (build the fit exclusively from these) —\n${clothingSummary}\n\n— ACCESSORIES: hats, caps, bags, jewelry (do NOT put these in piece_ids; only suggest one in optional_piece_ids if it truly completes this specific look — default is an empty array) —\n${accessorySummary}\n\nBuild one outfit for: "${occasion || "an everyday fit"}".\n\n1. Pick 3-5 clothing pieces that work together for the occasion, style profile, and color story. Rotate the closet — avoid defaulting to the same pieces every time.\n2. Only after the core fit is done: decide if any single accessory genuinely elevates it. If uncertain, leave optional_piece_ids empty.\n\nRespond ONLY with JSON, no markdown: {"title": "evocative 3-5 word fit name", "piece_ids": ["clothing ids only — absolutely no accessories here"], "optional_piece_ids": ["one accessory id if it genuinely elevates this look, otherwise []"], "why": "2-3 sentences on why this core combination works", "missing": "one piece not in the closet that would elevate this fit, or null"}`,
           },
         ],
         1200
@@ -648,6 +880,23 @@ function Fits({ pieces, profile, inspo, savedFits, saveFit, removeFit, flash }) 
   return (
     <div>
       <div style={{ fontFamily: serif, fontSize: 26, marginBottom: 12 }}>Build a fit</div>
+      {anchor && (
+        <div style={{
+          display: "flex", alignItems: "center", gap: 10,
+          background: T.cardUp, border: `1px solid ${T.tobacco}`,
+          borderRadius: 8, padding: "8px 10px", marginBottom: 10,
+          animation: "rise .3s ease",
+        }}>
+          {anchor.image && (
+            <img src={anchor.image} alt={anchor.name} style={{ width: 36, height: 36, objectFit: "cover", borderRadius: 4, flexShrink: 0 }} />
+          )}
+          <div style={{ flex: 1, overflow: "hidden" }}>
+            <div style={{ fontFamily: mono, fontSize: 8, letterSpacing: "0.2em", color: T.tobacco, textTransform: "uppercase" }}>Built around</div>
+            <div style={{ fontSize: 13, color: T.bone, marginTop: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{anchor.name}</div>
+          </div>
+          <button onClick={() => setAnchor(null)} style={{ border: "none", background: "none", color: T.faint, fontSize: 18, cursor: "pointer", padding: 4, lineHeight: 1 }}>×</button>
+        </div>
+      )}
       <input
         value={occasion}
         onChange={(e) => setOccasion(e.target.value)}

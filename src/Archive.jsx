@@ -1056,21 +1056,29 @@ function Gaps({ pieces, profile, inspo, gaps, saveGaps, toggleGapOwned, flash })
 // ———— STYLE PROFILE ————
 
 function Profile({ profile, saveProfile, inspo, saveInspo, removeInspo, assessment, saveAssessment, pieces, flash }) {
+  const [subTab, setSubTab] = useState("assessment");
   const [draft, setDraft] = useState(profile);
+  const [selectedInspo, setSelectedInspo] = useState(null);
   const inspoRef = useRef();
   const [inspoBusy, setInspoBusy] = useState(false);
   const [inspoProgress, setInspoProgress] = useState(null);
   const [assessBusy, setAssessBusy] = useState(false);
+
   useEffect(() => setDraft(profile), [profile]);
 
-  // fingerprint of the inputs that feed the assessment
+  // deselect if the chosen image was removed
+  useEffect(() => {
+    if (selectedInspo && !inspo.some((i) => i.id === selectedInspo.id)) setSelectedInspo(null);
+  }, [inspo, selectedInspo]);
+
   const fp = draft.trim() + "|" + inspo.map((i) => i.id).join(",");
   const stale = assessment && assessment.fp !== fp;
+  const unsaved = draft !== profile;
 
   const runAssessment = async () => {
     setAssessBusy(true);
     try {
-      saveProfile(draft); // assessment should match what's on screen
+      saveProfile(draft);
       const inspoNotes = inspo.length
         ? `\n\nInspo board vibes:\n${inspo.map((i) => "- " + i.vibe).join("\n")}`
         : "\n\n(No inspo images yet.)";
@@ -1125,169 +1133,266 @@ function Profile({ profile, saveProfile, inspo, saveInspo, removeInspo, assessme
     flash(added ? `Added ${added} inspo image${added === 1 ? "" : "s"}` : "Couldn't read those — try again");
   };
 
+  const TABS = [
+    ["assessment", "Style Assessment"],
+    ["inspo", inspo.length ? `Add inspiration  ${inspo.length}` : "Add inspiration"],
+    ["profile", "My Style"],
+  ];
+
   return (
     <div>
-      <div style={{ fontFamily: serif, fontSize: 26, marginBottom: 6 }}>Inspo board</div>
-      <p style={{ fontSize: 13, color: T.faint, margin: "0 0 14px", lineHeight: 1.6 }}>
-        Upload Pinterest saves or fit pics you're drawn to. The AI reads the vibe and lets it steer your generated fits.
-      </p>
-      <input
-        ref={inspoRef}
-        type="file"
-        accept="image/*"
-        multiple
-        style={{ display: "none" }}
-        onChange={handleInspoFiles}
-      />
-      <Btn onClick={() => inspoRef.current.click()} disabled={inspoBusy}>
-        {inspoBusy ? "Reading the vibe…" : "+ Add inspo images"}
-      </Btn>
-      {inspoBusy && (
-        <Thinking
-          label={
-            inspoProgress && inspoProgress.total > 1
-              ? `Reading ${inspoProgress.done + 1} of ${inspoProgress.total}…`
-              : "Distilling the aesthetic…"
-          }
-        />
-      )}
-      {inspo.length > 0 && (
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8, margin: "14px 0 4px" }}>
-          {inspo.map((item) => (
+      {/* ── Segmented control ── */}
+      <div
+        style={{
+          display: "flex",
+          background: T.card,
+          borderRadius: 8,
+          border: `1px solid ${T.line}`,
+          marginBottom: 20,
+          overflow: "hidden",
+        }}
+      >
+        {TABS.map(([id, label], idx) => (
+          <button
+            key={id}
+            onClick={() => setSubTab(id)}
+            style={{
+              flex: 1,
+              padding: "10px 3px",
+              border: "none",
+              borderRight: idx < TABS.length - 1 ? `1px solid ${T.line}` : "none",
+              background: subTab === id ? T.cardUp : "transparent",
+              color: subTab === id ? T.bone : T.faint,
+              fontFamily: mono,
+              fontSize: 9,
+              letterSpacing: "0.03em",
+              cursor: "pointer",
+              whiteSpace: "nowrap",
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+            }}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+
+      {/* ── Style Assessment ── */}
+      {subTab === "assessment" && (
+        <div>
+          <p style={{ fontSize: 13, color: T.faint, margin: "0 0 14px", lineHeight: 1.6 }}>
+            A synthesis of your written profile, inspo board, and closet — including where they disagree.
+          </p>
+          {stale && !assessBusy && (
+            <div style={{ fontFamily: mono, fontSize: 11, color: T.tobacco, marginBottom: 10, animation: "rise .3s ease" }}>
+              Your profile or inspo changed since this assessment.
+            </div>
+          )}
+          <Btn onClick={runAssessment} disabled={assessBusy}>
+            {assessBusy ? "Assessing…" : assessment ? "Update assessment" : "Run assessment"}
+          </Btn>
+          {assessBusy && <Thinking label="Reading between your pieces…" />}
+          {assessment ? (
             <div
-              key={item.id}
               style={{
-                position: "relative",
-                borderRadius: 8,
-                overflow: "hidden",
+                background: T.card,
+                border: `1px solid ${stale ? T.tobacco : T.line}`,
+                borderRadius: 10,
+                padding: "18px 16px",
+                marginTop: 16,
+                animation: "rise .3s ease",
+              }}
+            >
+              <div style={{ fontFamily: mono, fontSize: 10, letterSpacing: "0.2em", color: T.tobacco }}>THE READ</div>
+              <div style={{ fontFamily: serif, fontSize: 30, margin: "4px 0 10px" }}>{assessment.headline}</div>
+              <p style={{ fontSize: 14, lineHeight: 1.65, color: T.stone, margin: "0 0 14px" }}>{assessment.read}</p>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 14 }}>
+                {(assessment.pillars || []).map((p, i) => (
+                  <span
+                    key={i}
+                    style={{
+                      padding: "5px 11px",
+                      borderRadius: 20,
+                      border: `1px solid ${T.line}`,
+                      background: T.cardUp,
+                      fontFamily: mono,
+                      fontSize: 10,
+                      letterSpacing: "0.08em",
+                      color: T.bone,
+                      textTransform: "uppercase",
+                    }}
+                  >
+                    {p}
+                  </span>
+                ))}
+              </div>
+              {assessment.blind_spot && (
+                <div style={{ fontSize: 13, lineHeight: 1.55, color: T.stone, borderLeft: `2px solid ${T.olive}`, paddingLeft: 10 }}>
+                  <span style={{ fontFamily: mono, fontSize: 10, letterSpacing: "0.15em", color: T.olive }}>BLIND SPOT: </span>
+                  {assessment.blind_spot}
+                </div>
+              )}
+            </div>
+          ) : !assessBusy ? (
+            <div style={{ padding: "48px 12px", textAlign: "center" }}>
+              <div style={{ fontFamily: serif, fontSize: 22, color: T.stone }}>No assessment yet.</div>
+              <div style={{ fontSize: 13, color: T.faint, marginTop: 8, lineHeight: 1.6 }}>
+                Fill in your style profile and run the assessment to get your style identity.
+              </div>
+            </div>
+          ) : null}
+        </div>
+      )}
+
+      {/* ── Add Inspiration ── */}
+      {subTab === "inspo" && (
+        <div>
+          <p style={{ fontSize: 13, color: T.faint, margin: "0 0 14px", lineHeight: 1.6 }}>
+            Upload Pinterest saves or fit pics you're drawn to. The AI reads the vibe and steers your generated fits.
+          </p>
+          <input
+            ref={inspoRef}
+            type="file"
+            accept="image/*"
+            multiple
+            style={{ display: "none" }}
+            onChange={handleInspoFiles}
+          />
+          <Btn onClick={() => inspoRef.current.click()} disabled={inspoBusy}>
+            {inspoBusy ? "Reading the vibe…" : "+ Add inspo images"}
+          </Btn>
+          {inspoBusy && (
+            <Thinking
+              label={
+                inspoProgress && inspoProgress.total > 1
+                  ? `Reading ${inspoProgress.done + 1} of ${inspoProgress.total}…`
+                  : "Distilling the aesthetic…"
+              }
+            />
+          )}
+
+          {/* Detail panel — sits below CTA, above grid */}
+          {selectedInspo && (
+            <div
+              style={{
+                background: T.card,
                 border: `1px solid ${T.line}`,
+                borderRadius: 10,
+                overflow: "hidden",
+                marginTop: 14,
                 animation: "rise .3s ease",
               }}
             >
               <img
-                src={item.image}
-                alt={item.vibe}
-                title={item.vibe}
-                style={{ width: "100%", aspectRatio: "3/4", objectFit: "cover", display: "block" }}
+                src={selectedInspo.image}
+                alt={selectedInspo.vibe}
+                style={{ width: "100%", maxHeight: 280, objectFit: "cover", display: "block" }}
               />
-              <button
-                onClick={() => removeInspo(item.id)}
-                aria-label="Remove inspo image"
-                style={{
-                  position: "absolute",
-                  top: 5,
-                  right: 5,
-                  width: 22,
-                  height: 22,
-                  borderRadius: 11,
-                  border: "none",
-                  background: "rgba(27,24,21,.8)",
-                  color: T.stone,
-                  fontSize: 12,
-                  cursor: "pointer",
-                  lineHeight: 1,
-                }}
-              >
-                ×
-              </button>
+              <div style={{ padding: "14px 14px 16px" }}>
+                <div style={{ fontFamily: mono, fontSize: 9, letterSpacing: "0.18em", color: T.tobacco, marginBottom: 6 }}>
+                  THE VIBE
+                </div>
+                <p style={{ fontSize: 13, lineHeight: 1.6, color: T.stone, margin: "0 0 14px" }}>
+                  {selectedInspo.vibe}
+                </p>
+                <Btn
+                  ghost
+                  onClick={() => {
+                    removeInspo(selectedInspo.id);
+                    setSelectedInspo(null);
+                  }}
+                >
+                  Remove from board
+                </Btn>
+              </div>
             </div>
-          ))}
+          )}
+
+          {inspo.length > 0 ? (
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "1fr 1fr 1fr 1fr",
+                gap: 6,
+                marginTop: 14,
+              }}
+            >
+              {inspo.map((item) => (
+                <button
+                  key={item.id}
+                  onClick={() => setSelectedInspo(selectedInspo?.id === item.id ? null : item)}
+                  aria-label={item.vibe}
+                  style={{
+                    padding: 0,
+                    border: `2px solid ${selectedInspo?.id === item.id ? T.tobacco : "transparent"}`,
+                    borderRadius: 6,
+                    overflow: "hidden",
+                    cursor: "pointer",
+                    background: "none",
+                    display: "block",
+                    animation: "rise .3s ease",
+                  }}
+                >
+                  <img
+                    src={item.image}
+                    alt=""
+                    style={{ width: "100%", aspectRatio: "3/4", objectFit: "cover", display: "block" }}
+                  />
+                </button>
+              ))}
+            </div>
+          ) : !inspoBusy ? (
+            <div style={{ padding: "48px 12px", textAlign: "center" }}>
+              <div style={{ fontFamily: serif, fontSize: 22, color: T.stone }}>Board is empty.</div>
+              <div style={{ fontSize: 13, color: T.faint, marginTop: 8, lineHeight: 1.6 }}>
+                Add Pinterest saves, editorial shots, or fit pics that represent the aesthetic you're building.
+              </div>
+            </div>
+          ) : null}
         </div>
       )}
 
-      <div style={{ height: 1, background: T.line, margin: "24px 0" }} />
-
-      <div style={{ fontFamily: serif, fontSize: 26, marginBottom: 6 }}>Style profile</div>
-      <p style={{ fontSize: 13, color: T.faint, margin: "0 0 14px", lineHeight: 1.6 }}>
-        The AI judges every fit and scan against this. Keep it honest — colors, cuts, what you never wear.
-      </p>
-      <textarea
-        value={draft}
-        onChange={(e) => setDraft(e.target.value)}
-        rows={8}
-        style={{
-          width: "100%",
-          padding: 14,
-          borderRadius: 8,
-          border: `1px solid ${T.line}`,
-          background: T.card,
-          color: T.bone,
-          fontSize: 14,
-          lineHeight: 1.6,
-          fontFamily: sans,
-          resize: "vertical",
-          marginBottom: 10,
-        }}
-      />
-      <Btn
-        onClick={() => {
-          saveProfile(draft);
-          flash("Profile saved");
-        }}
-      >
-        Save profile
-      </Btn>
-
-      <div style={{ height: 1, background: T.line, margin: "24px 0" }} />
-
-      <div style={{ fontFamily: serif, fontSize: 26, marginBottom: 6 }}>AI style assessment</div>
-      <p style={{ fontSize: 13, color: T.faint, margin: "0 0 14px", lineHeight: 1.6 }}>
-        A synthesis of your written profile, inspo board, and closet — including where they disagree.
-      </p>
-
-      {assessment && (
-        <div
-          style={{
-            background: T.card,
-            border: `1px solid ${stale ? T.tobacco : T.line}`,
-            borderRadius: 10,
-            padding: "18px 16px",
-            marginBottom: 12,
-            animation: "rise .3s ease",
-          }}
-        >
-          <div style={{ fontFamily: mono, fontSize: 10, letterSpacing: "0.2em", color: T.tobacco }}>THE READ</div>
-          <div style={{ fontFamily: serif, fontSize: 30, margin: "4px 0 10px" }}>{assessment.headline}</div>
-          <p style={{ fontSize: 14, lineHeight: 1.65, color: T.stone, margin: "0 0 14px" }}>{assessment.read}</p>
-          <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 14 }}>
-            {(assessment.pillars || []).map((p, i) => (
-              <span
-                key={i}
-                style={{
-                  padding: "5px 11px",
-                  borderRadius: 20,
-                  border: `1px solid ${T.line}`,
-                  background: T.cardUp,
-                  fontFamily: mono,
-                  fontSize: 10,
-                  letterSpacing: "0.08em",
-                  color: T.bone,
-                  textTransform: "uppercase",
-                }}
-              >
-                {p}
-              </span>
-            ))}
-          </div>
-          {assessment.blind_spot && (
-            <div style={{ fontSize: 13, lineHeight: 1.55, color: T.stone, borderLeft: `2px solid ${T.olive}`, paddingLeft: 10 }}>
-              <span style={{ fontFamily: mono, fontSize: 10, letterSpacing: "0.15em", color: T.olive }}>BLIND SPOT: </span>
-              {assessment.blind_spot}
+      {/* ── My Style ── */}
+      {subTab === "profile" && (
+        <div>
+          <p style={{ fontSize: 13, color: T.faint, margin: "0 0 14px", lineHeight: 1.6 }}>
+            The AI judges every fit and scan against this. Keep it honest — colors, cuts, what you never wear.
+          </p>
+          {unsaved && (
+            <div style={{ fontFamily: mono, fontSize: 11, color: T.tobacco, marginBottom: 10, animation: "rise .3s ease" }}>
+              Unsaved changes
+            </div>
+          )}
+          <Btn onClick={() => { saveProfile(draft); flash("Profile saved"); }}>
+            Save my style
+          </Btn>
+          <textarea
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            rows={8}
+            style={{
+              width: "100%",
+              padding: 14,
+              borderRadius: 8,
+              border: `1px solid ${T.line}`,
+              background: T.card,
+              color: T.bone,
+              fontSize: 14,
+              lineHeight: 1.6,
+              fontFamily: sans,
+              resize: "vertical",
+              marginTop: 12,
+            }}
+          />
+          {!draft.trim() && (
+            <div style={{ padding: "32px 12px 0", textAlign: "center" }}>
+              <div style={{ fontSize: 13, color: T.faint, lineHeight: 1.6 }}>
+                Describe your aesthetic — preferred colors, silhouettes, what you'd never wear. The more specific, the sharper the AI's suggestions.
+              </div>
             </div>
           )}
         </div>
       )}
-
-      {stale && !assessBusy && (
-        <div style={{ fontFamily: mono, fontSize: 11, color: T.tobacco, margin: "0 0 10px", animation: "rise .3s ease" }}>
-          Your profile or inspo changed since this assessment.
-        </div>
-      )}
-
-      <Btn onClick={runAssessment} disabled={assessBusy}>
-        {assessBusy ? "Assessing…" : assessment ? "Update assessment" : "Run assessment"}
-      </Btn>
-      {assessBusy && <Thinking label="Reading between your pieces…" />}
     </div>
   );
 }

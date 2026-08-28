@@ -909,6 +909,7 @@ function Scan({ pieces, profile, flash }) {
 
 function Gaps({ pieces, profile, inspo, gaps, saveGaps, toggleGapOwned, flash }) {
   const [busy, setBusy] = useState(false);
+  const [expandedIdx, setExpandedIdx] = useState(null);
 
   const fp = pieces.length + "|" + inspo.map((i) => i.id).join(",");
   const stale = gaps && gaps.fp !== fp;
@@ -963,60 +964,88 @@ function Gaps({ pieces, profile, inspo, gaps, saveGaps, toggleGapOwned, flash })
             </div>
           </div>
 
-          {gaps.items.map((it, i) => (
-            <button
-              key={i}
-              onClick={() => toggleGapOwned(i)}
-              style={{
-                width: "100%",
-                textAlign: "left",
-                display: "flex",
-                gap: 12,
-                background: T.card,
-                border: `1px solid ${it.owned ? T.olive : T.line}`,
-                borderRadius: 10,
-                padding: "14px 14px",
-                marginBottom: 8,
-                cursor: "pointer",
-                opacity: it.owned ? 0.55 : 1,
-                fontFamily: sans,
-              }}
-            >
+          {gaps.items.map((it, i) => {
+            const open = expandedIdx === i;
+            return (
               <div
+                key={i}
                 style={{
-                  width: 20,
-                  height: 20,
-                  borderRadius: 4,
-                  flexShrink: 0,
-                  marginTop: 2,
-                  border: `1px solid ${it.owned ? T.olive : T.faint}`,
-                  background: it.owned ? T.olive : "transparent",
-                  color: T.bg,
-                  fontSize: 13,
-                  lineHeight: "19px",
-                  textAlign: "center",
+                  background: T.card,
+                  border: `1px solid ${it.owned ? T.olive : T.line}`,
+                  borderRadius: 10,
+                  marginBottom: 8,
+                  opacity: it.owned ? 0.6 : 1,
+                  overflow: "hidden",
                 }}
               >
-                {it.owned ? "✓" : ""}
-              </div>
-              <div style={{ flex: 1 }}>
+                {/* collapsed row — always visible */}
                 <div
+                  onClick={() => setExpandedIdx(open ? null : i)}
                   style={{
-                    fontSize: 15,
-                    color: T.bone,
-                    textDecoration: it.owned ? "line-through" : "none",
-                    lineHeight: 1.3,
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 12,
+                    padding: "13px 14px",
+                    cursor: "pointer",
+                    fontFamily: sans,
                   }}
                 >
-                  {it.item}
+                  <div
+                    onClick={(e) => { e.stopPropagation(); toggleGapOwned(i); }}
+                    style={{
+                      width: 20,
+                      height: 20,
+                      borderRadius: 4,
+                      flexShrink: 0,
+                      border: `1px solid ${it.owned ? T.olive : T.faint}`,
+                      background: it.owned ? T.olive : "transparent",
+                      color: T.bg,
+                      fontSize: 13,
+                      lineHeight: "19px",
+                      textAlign: "center",
+                      cursor: "pointer",
+                    }}
+                  >
+                    {it.owned ? "✓" : ""}
+                  </div>
+                  <div
+                    style={{
+                      flex: 1,
+                      fontSize: 15,
+                      color: T.bone,
+                      textDecoration: it.owned ? "line-through" : "none",
+                      lineHeight: 1.3,
+                    }}
+                  >
+                    {it.item}
+                  </div>
+                  <div style={{ fontFamily: mono, fontSize: 14, color: T.faint, lineHeight: 1 }}>
+                    {open ? "−" : "+"}
+                  </div>
                 </div>
-                <div style={{ fontSize: 13, color: T.stone, marginTop: 5, lineHeight: 1.5 }}>{it.why}</div>
-                {it.price && (
-                  <div style={{ fontFamily: mono, fontSize: 11, color: T.tobacco, marginTop: 6 }}>{it.price}</div>
+
+                {/* expanded content */}
+                {open && (
+                  <div
+                    style={{
+                      padding: "0 14px 14px",
+                      paddingLeft: 14 + 20 + 12,
+                      borderTop: `1px solid ${T.line}`,
+                      paddingTop: 12,
+                      animation: "rise .2s ease",
+                    }}
+                  >
+                    <div style={{ fontSize: 13, color: T.stone, lineHeight: 1.55 }}>{it.why}</div>
+                    {it.price && (
+                      <div style={{ fontFamily: mono, fontSize: 11, color: T.tobacco, marginTop: 8 }}>
+                        {it.price}
+                      </div>
+                    )}
+                  </div>
                 )}
               </div>
-            </button>
-          ))}
+            );
+          })}
 
           {gaps.stop_buying && (
             <div

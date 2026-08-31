@@ -27,6 +27,7 @@ const ls = {
 const api = {
   async get(key) {
     // Collections are pre-populated by list(); settings are fetched on demand.
+    if (key.startsWith('myoutfit:')) return ls.get(key);
     if (cache.has(key)) return { value: cache.get(key) };
     const res = await fetch('/api/settings?key=' + encodeURIComponent(key));
     if (!res.ok) return null;
@@ -62,6 +63,8 @@ const api = {
         headers: { 'Content-Type': 'application/json' },
         body: value,
       });
+    } else if (key.startsWith('myoutfit:')) {
+      await ls.set(key, value);
     } else {
       await fetch('/api/settings', {
         method: 'PUT',
@@ -78,11 +81,16 @@ const api = {
     } else if (key.startsWith('inspo:')) {
       await fetch('/api/inspo/' + encodeURIComponent(key.slice(6)), { method: 'DELETE' });
     } else if (key.startsWith('fit:')) {
-      await fetch('/api/fits/' + encodeURIComponent(key.slice(6)), { method: 'DELETE' });    } else if (key.startsWith('want:')) {
-      await fetch('/api/wants/' + encodeURIComponent(key.slice(5)), { method: 'DELETE' });    }
+      await fetch('/api/fits/' + encodeURIComponent(key.slice(6)), { method: 'DELETE' });
+    } else if (key.startsWith('want:')) {
+      await fetch('/api/wants/' + encodeURIComponent(key.slice(5)), { method: 'DELETE' });
+    } else if (key.startsWith('myoutfit:')) {
+      await ls.delete(key);
+    }
   },
 
   async list(prefix) {
+    if (prefix === 'myoutfit:') return ls.list(prefix);
     const map = { 'piece:': '/api/pieces', 'inspo:': '/api/inspo', 'fit:': '/api/fits', 'want:': '/api/wants' };
     const endpoint = map[prefix];
     if (!endpoint) return { keys: [] };

@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from "react";
+import { saveImage, loadImage, deleteImages } from "./imageStore";
 
 // ————————————————————————————————————————————————
 // ARCHIVE — a personal wardrobe index + AI stylist
@@ -107,6 +108,7 @@ export default function Archive() {
   const [savedFits, setSavedFits] = useState([]);
   const [gaps, setGaps] = useState(null);
   const [wants, setWants] = useState([]);
+  const [myOutfits, setMyOutfits] = useState([]);
   const [loaded, setLoaded] = useState(false);
   const [toast, setToast] = useState(null);
   const [anchor, setAnchor] = useState(null);
@@ -177,6 +179,19 @@ export default function Archive() {
         }
         loadedWants.sort((a, b) => b.added - a.added);
         setWants(loadedWants);
+      } catch (e) {}
+      try {
+        const listing = await window.storage.list("myoutfit:");
+        const oKeys = listing?.keys || [];
+        const loadedOutfits = [];
+        for (const k of oKeys) {
+          try {
+            const r = await window.storage.get(k);
+            if (r?.value) loadedOutfits.push(JSON.parse(r.value));
+          } catch (e) {}
+        }
+        loadedOutfits.sort((a, b) => b.added - a.added);
+        setMyOutfits(loadedOutfits);
       } catch (e) {}
       setLoaded(true);
     })();
@@ -308,6 +323,33 @@ export default function Archive() {
     }
   };
 
+  const saveMyOutfit = async (outfit) => {
+    setMyOutfits((prev) => [outfit, ...prev]);
+    try {
+      await window.storage.set("myoutfit:" + outfit.id, JSON.stringify(outfit));
+    } catch (e) {
+      flash("Saved to session only — storage unavailable");
+    }
+  };
+
+  const removeMyOutfit = async (id) => {
+    const outfit = myOutfits.find((o) => o.id === id);
+    setMyOutfits((prev) => prev.filter((o) => o.id !== id));
+    try {
+      await window.storage.delete("myoutfit:" + id);
+    } catch (e) {}
+    if (outfit?.imageIds?.length) deleteImages(outfit.imageIds).catch(() => {});
+  };
+
+  const updateMyOutfit = async (updated) => {
+    setMyOutfits((prev) => prev.map((o) => (o.id === updated.id ? updated : o)));
+    try {
+      await window.storage.set("myoutfit:" + updated.id, JSON.stringify(updated));
+    } catch (e) {
+      flash("Saved to session only — storage unavailable");
+    }
+  };
+
   return (
     <div
       style={{
@@ -386,6 +428,10 @@ export default function Archive() {
             saveAssessment={saveAssessment}
             pieces={pieces}
             flash={flash}
+            myOutfits={myOutfits}
+            saveMyOutfit={saveMyOutfit}
+            removeMyOutfit={removeMyOutfit}
+            updateMyOutfit={updateMyOutfit}
           />
         )}
       </main>
@@ -1489,7 +1535,7 @@ function Gaps({ pieces, profile, inspo, gaps, saveGaps, toggleGapOwned, wants, r
 
 // ———— STYLE PROFILE ————
 
-function Profile({ profile, saveProfile, inspo, saveInspo, removeInspo, assessment, saveAssessment, pieces, flash }) {
+function Profile({ profile, saveProfile, inspo, saveInspo, removeInspo, assessment, saveAssessment, pieces, flash, myOutfits, saveMyOutfit, removeMyOutfit, updateMyOutfit }) {
   const [subTab, setSubTab] = useState("assessment");
   const [draft, setDraft] = useState(profile);
   const [selectedInspo, setSelectedInspo] = useState(null);
@@ -1825,7 +1871,637 @@ function Profile({ profile, saveProfile, inspo, saveInspo, removeInspo, assessme
               </div>
             </div>
           )}
+          <MyOutfitsSection
+            outfits={myOutfits}
+            pieces={pieces}
+            saveMyOutfit={saveMyOutfit}
+            removeMyOutfit={removeMyOutfit}
+            updateMyOutfit={updateMyOutfit}
+            saveInspo={saveInspo}
+            flash={flash}
+          />
         </div>
+      )}
+    </div>
+  );
+}
+
+// ———— MY OUTFITS ————
+
+function useImageSrc(imageId) {
+  const [src, setSrc] = useState(null);
+  useEffect(() => {
+    if (!imageId) return;
+    loadImage(imageId).then(setSrc).catch(() => {});
+  }, [imageId]);
+  return src;
+}
+
+function OutfitCard({ outfit, onClick }) {
+  const src = useImageSrc(outfit.imageIds?.[0]);
+  const date = outfit.dateWorn
+    ? new Date(outfit.dateWorn + "T12:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric" })
+    : "";
+  return (
+    <button
+      onClick={onClick}
+      style={{
+        padding: 0, border: `1px solid ${T.line}`, borderRadius: 8,
+        overflow: "hidden", background: T.card, cursor: "pointer",
+        display: "block", textAlign: "left", width: "100%",
+        animation: "rise .3s ease",
+      }}
+    >
+      <div style={{ aspectRatio: "3/4", background: T.cardUp, position: "relative" }}>
+        {src && (
+          <img src={src} alt="" style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />
+        )}
+        {outfit.imageIds?.length > 1 && (
+          <div style={{
+            position: "absolute", top: 5, right: 5,
+            background: "rgba(27,24,21,.75)", backdropFilter: "blur(4px)",
+            borderRadius: 10, padding: "2px 6px",
+            fontFamily: mono, fontSize: 9, color: T.stone,
+          }}>+{outfit.imageIds.length - 1}</div>
+        )}
+        {outfit.inInspo && (
+          <div style={{
+            position: "absolute", top: 5, left: 5,
+            background: "rgba(176,141,87,.85)", borderRadius: 10,
+            padding: "2px 6px", fontFamily: mono, fontSize: 8,
+            color: T.bg, letterSpacing: "0.08em",
+          }}>INSPO</div>
+        )}
+      </div>
+      <div style={{ padding: "7px 8px 9px" }}>
+        <div style={{ fontFamily: mono, fontSize: 10, color: T.tobacco }}>{date}</div>
+        {outfit.occasion && (
+          <div style={{
+            fontSize: 11, color: T.stone, marginTop: 2, lineHeight: 1.3,
+            overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+          }}>{outfit.occasion}</div>
+        )}
+      </div>
+    </button>
+  );
+}
+
+function OutfitAddFlow({ pieces, onSave, onClose, flash }) {
+  const cameraRef = useRef();
+  const libRef = useRef();
+  const [view, setView] = useState("pick");
+  const [staged, setStaged] = useState([]);
+  const [dateWorn, setDateWorn] = useState(() => new Date().toISOString().slice(0, 10));
+  const [pieceIds, setPieceIds] = useState([]);
+  const [occasion, setOccasion] = useState("");
+  const [note, setNote] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  const addFiles = async (files) => {
+    const slots = 3 - staged.length;
+    if (slots <= 0) return;
+    const batch = Array.from(files).slice(0, slots);
+    const compressed = [];
+    for (let i = 0; i < batch.length; i++) {
+      try {
+        const dataUrl = await compressImage(batch[i]);
+        compressed.push({ id: "img_" + Date.now() + "_" + i, dataUrl });
+      } catch (e) {}
+    }
+    if (compressed.length) {
+      setStaged((prev) => [...prev, ...compressed]);
+      setView("review");
+    }
+  };
+
+  const removeStaged = (id) => setStaged((prev) => prev.filter((s) => s.id !== id));
+
+  const handleSave = async () => {
+    if (!staged.length) return;
+    setSaving(true);
+    const savedIds = [];
+    for (const img of staged) {
+      try {
+        await saveImage(img.id, img.dataUrl);
+        savedIds.push(img.id);
+      } catch (e) {
+        if (e.name === "QuotaExceededError" || String(e.message).toLowerCase().includes("quota")) {
+          flash("Photo storage full — delete older outfit photos to free up space");
+          break;
+        }
+      }
+    }
+    if (!savedIds.length) {
+      flash("Couldn't save photos — storage may be full");
+      setSaving(false);
+      return;
+    }
+    const outfit = {
+      id: "o" + Date.now(),
+      sourceType: "self-photo",
+      imageIds: savedIds,
+      dateWorn,
+      pieceIds,
+      occasion: occasion.trim(),
+      note: note.trim(),
+      inInspo: false,
+      added: Date.now(),
+    };
+    await onSave(outfit);
+    setSaving(false);
+    onClose();
+  };
+
+  const togglePiece = (id) =>
+    setPieceIds((prev) => prev.includes(id) ? prev.filter((p) => p !== id) : [...prev, id]);
+
+  const fieldLabel = (txt) => (
+    <div style={{ fontFamily: mono, fontSize: 10, letterSpacing: "0.14em", color: T.faint, marginBottom: 6 }}>{txt}</div>
+  );
+
+  return (
+    <>
+      <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.55)", zIndex: 200 }} />
+      <div style={{
+        position: "fixed", bottom: 0, left: 0, right: 0, maxHeight: "90vh",
+        background: T.card, borderRadius: "16px 16px 0 0", zIndex: 201,
+        display: "flex", flexDirection: "column",
+        animation: "slideUp .28s ease", border: `1px solid ${T.line}`, borderBottom: "none",
+      }}>
+        <div onClick={onClose} style={{ display: "flex", justifyContent: "center", padding: "12px 0 8px", cursor: "pointer", flexShrink: 0 }}>
+          <div style={{ width: 36, height: 4, borderRadius: 2, background: T.line }} />
+        </div>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "0 16px 12px", flexShrink: 0, borderBottom: `1px solid ${T.line}` }}>
+          <div style={{ fontFamily: serif, fontSize: 20 }}>{view === "pick" ? "Add outfit" : "Review"}</div>
+          <button
+            onClick={view === "pick" ? onClose : () => setView("pick")}
+            style={{ border: "none", background: "none", color: T.faint, fontSize: 20, cursor: "pointer", lineHeight: 1 }}
+          >{view === "pick" ? "×" : "←"}</button>
+        </div>
+        <div style={{ overflowY: "auto", flex: 1, padding: "16px 16px 40px" }}>
+          {view === "pick" && (
+            <div style={{ display: "flex", flexDirection: "column", gap: 10, paddingTop: 8 }}>
+              <input ref={cameraRef} type="file" accept="image/*" capture="environment" multiple style={{ display: "none" }}
+                onChange={(e) => { addFiles(e.target.files); e.target.value = ""; }} />
+              <input ref={libRef} type="file" accept="image/*" multiple style={{ display: "none" }}
+                onChange={(e) => { addFiles(e.target.files); e.target.value = ""; }} />
+              <Btn onClick={() => cameraRef.current.click()}>Take photo</Btn>
+              <Btn ghost onClick={() => libRef.current.click()}>Choose from library</Btn>
+              <div style={{ fontFamily: mono, fontSize: 10, color: T.faint, textAlign: "center", marginTop: 4 }}>
+                Up to 3 photos per outfit
+              </div>
+            </div>
+          )}
+          {view === "review" && (
+            <div>
+              <div style={{ display: "flex", gap: 8, marginBottom: 16, overflowX: "auto", paddingBottom: 4 }}>
+                {staged.map((img) => (
+                  <div key={img.id} style={{
+                    position: "relative", flexShrink: 0, width: 100, height: 133,
+                    borderRadius: 8, overflow: "hidden", border: `1px solid ${T.line}`,
+                  }}>
+                    <img src={img.dataUrl} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                    <button onClick={() => removeStaged(img.id)} style={{
+                      position: "absolute", top: 4, right: 4, width: 22, height: 22,
+                      borderRadius: 11, border: "none", background: "rgba(27,24,21,.8)",
+                      color: T.stone, fontSize: 13, lineHeight: 1, cursor: "pointer", padding: 0,
+                    }}>×</button>
+                  </div>
+                ))}
+                {staged.length < 3 && (
+                  <button onClick={() => libRef.current.click()} style={{
+                    flexShrink: 0, width: 100, height: 133, borderRadius: 8,
+                    border: `1px dashed ${T.line}`, background: "none", color: T.faint,
+                    fontSize: 24, cursor: "pointer",
+                    display: "flex", alignItems: "center", justifyContent: "center",
+                  }}>+</button>
+                )}
+              </div>
+
+              {fieldLabel("DATE WORN")}
+              <input
+                type="date"
+                value={dateWorn}
+                onChange={(e) => setDateWorn(e.target.value)}
+                style={{
+                  width: "100%", padding: "12px 14px", borderRadius: 8,
+                  border: `1px solid ${T.line}`, background: T.cardUp,
+                  color: T.bone, fontSize: 14, fontFamily: sans,
+                  marginBottom: 12, colorScheme: "dark",
+                }}
+              />
+
+              {pieces.length > 0 && (
+                <>
+                  {fieldLabel("PIECES WORN — tap to link")}
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 14 }}>
+                    {pieces.map((p) => {
+                      const on = pieceIds.includes(p.id);
+                      return (
+                        <button key={p.id} onClick={() => togglePiece(p.id)} style={{
+                          padding: "5px 10px", borderRadius: 20, fontSize: 11, fontFamily: mono,
+                          border: `1px solid ${on ? T.tobacco : T.line}`,
+                          background: on ? T.tobacco : "transparent",
+                          color: on ? T.bg : T.stone, cursor: "pointer",
+                        }}>{p.name}</button>
+                      );
+                    })}
+                  </div>
+                </>
+              )}
+
+              {fieldLabel("OCCASION (optional)")}
+              <input
+                value={occasion}
+                onChange={(e) => setOccasion(e.target.value)}
+                placeholder="e.g. dinner out, work, weekend"
+                style={{
+                  width: "100%", padding: "12px 14px", borderRadius: 8,
+                  border: `1px solid ${T.line}`, background: T.cardUp,
+                  color: T.bone, fontSize: 14, fontFamily: sans, marginBottom: 12,
+                }}
+              />
+
+              {fieldLabel("NOTE (optional)")}
+              <textarea
+                value={note}
+                onChange={(e) => setNote(e.target.value)}
+                placeholder="How it felt, what you'd change…"
+                rows={3}
+                style={{
+                  width: "100%", padding: "12px 14px", borderRadius: 8,
+                  border: `1px solid ${T.line}`, background: T.cardUp, color: T.bone,
+                  fontSize: 14, fontFamily: sans, resize: "vertical",
+                  marginBottom: 16, lineHeight: 1.5,
+                }}
+              />
+
+              <Btn onClick={handleSave} disabled={saving || !staged.length}>
+                {saving ? "Saving…" : "Save outfit"}
+              </Btn>
+            </div>
+          )}
+        </div>
+      </div>
+    </>
+  );
+}
+
+function OutfitDetail({ outfit, pieces, onClose, onDelete, onUpdate, onAddToInspo }) {
+  const [view, setView] = useState("detail");
+  const [images, setImages] = useState([]);
+  const [editDate, setEditDate] = useState(outfit.dateWorn || "");
+  const [editPieceIds, setEditPieceIds] = useState(outfit.pieceIds || []);
+  const [editOccasion, setEditOccasion] = useState(outfit.occasion || "");
+  const [editNote, setEditNote] = useState(outfit.note || "");
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    Promise.all((outfit.imageIds || []).map((id) => loadImage(id)))
+      .then((imgs) => setImages(imgs.filter(Boolean)));
+  }, [outfit.id]);
+
+  const linkedPieces = pieces.filter((p) => outfit.pieceIds?.includes(p.id));
+
+  const handleSave = async () => {
+    setSaving(true);
+    await onUpdate({
+      ...outfit,
+      dateWorn: editDate,
+      pieceIds: editPieceIds,
+      occasion: editOccasion.trim(),
+      note: editNote.trim(),
+    });
+    setSaving(false);
+    onClose();
+  };
+
+  const toggleEditPiece = (id) =>
+    setEditPieceIds((prev) => prev.includes(id) ? prev.filter((p) => p !== id) : [...prev, id]);
+
+  const date = outfit.dateWorn
+    ? new Date(outfit.dateWorn + "T12:00:00").toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" })
+    : "";
+
+  const fieldLabel = (txt) => (
+    <div style={{ fontFamily: mono, fontSize: 10, letterSpacing: "0.14em", color: T.faint, marginBottom: 6 }}>{txt}</div>
+  );
+
+  return (
+    <>
+      <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.55)", zIndex: 200 }} />
+      <div style={{
+        position: "fixed", bottom: 0, left: 0, right: 0, maxHeight: "90vh",
+        background: T.card, borderRadius: "16px 16px 0 0", zIndex: 201,
+        display: "flex", flexDirection: "column",
+        animation: "slideUp .28s ease", border: `1px solid ${T.line}`, borderBottom: "none",
+      }}>
+        <div onClick={onClose} style={{ display: "flex", justifyContent: "center", padding: "12px 0 8px", cursor: "pointer", flexShrink: 0 }}>
+          <div style={{ width: 36, height: 4, borderRadius: 2, background: T.line }} />
+        </div>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "0 16px 12px", flexShrink: 0, borderBottom: `1px solid ${T.line}` }}>
+          <div style={{ fontFamily: serif, fontSize: 20 }}>
+            {view === "detail" ? date : view === "edit" ? "Edit outfit" : "Delete outfit?"}
+          </div>
+          <button
+            onClick={view === "detail" ? onClose : () => setView("detail")}
+            style={{ border: "none", background: "none", color: T.faint, fontSize: 20, cursor: "pointer", lineHeight: 1 }}
+          >{view === "detail" ? "×" : "←"}</button>
+        </div>
+        <div style={{ overflowY: "auto", flex: 1, padding: "0 16px 40px" }}>
+
+          {view === "detail" && (
+            <div>
+              {images.length > 0 && (
+                <div style={{ display: "flex", gap: 8, marginTop: 14, overflowX: "auto", paddingBottom: 4 }}>
+                  {images.map((src, i) => (
+                    <img key={i} src={src} alt="" style={{
+                      flexShrink: 0,
+                      width: images.length === 1 ? "100%" : 180,
+                      height: images.length === 1 ? "auto" : 240,
+                      maxHeight: 340,
+                      objectFit: "cover", borderRadius: 8, border: `1px solid ${T.line}`,
+                    }} />
+                  ))}
+                </div>
+              )}
+              {outfit.occasion && (
+                <div style={{ fontSize: 15, color: T.bone, marginTop: 14, lineHeight: 1.4 }}>{outfit.occasion}</div>
+              )}
+              {outfit.note && (
+                <p style={{ fontSize: 13, color: T.stone, lineHeight: 1.6, marginTop: 8, marginBottom: 0 }}>{outfit.note}</p>
+              )}
+              {linkedPieces.length > 0 && (
+                <div style={{ marginTop: 14 }}>
+                  <div style={{ fontFamily: mono, fontSize: 9, letterSpacing: "0.18em", color: T.faint, marginBottom: 8 }}>PIECES</div>
+                  <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                    {linkedPieces.map((p) => (
+                      <span key={p.id} style={{
+                        padding: "4px 10px", borderRadius: 20, fontFamily: mono, fontSize: 10,
+                        border: `1px solid ${T.line}`, color: T.stone,
+                      }}>{p.name}</span>
+                    ))}
+                  </div>
+                </div>
+              )}
+              <div style={{ marginTop: 20, display: "flex", flexDirection: "column", gap: 8 }}>
+                {!outfit.inInspo ? (
+                  <Btn ghost onClick={() => onAddToInspo(outfit)}>Add to inspo board</Btn>
+                ) : (
+                  <div style={{ fontFamily: mono, fontSize: 10, color: T.tobacco, textAlign: "center", padding: "8px 0" }}>
+                    ✓ On your inspo board
+                  </div>
+                )}
+                <Btn ghost onClick={() => setView("edit")}>Edit</Btn>
+                <button onClick={() => setView("confirm")} style={{
+                  width: "100%", padding: "14px 16px", borderRadius: 8,
+                  border: `1px solid ${T.line}`, background: "none",
+                  color: T.bad, fontFamily: mono, fontSize: 12,
+                  letterSpacing: "0.12em", textTransform: "uppercase", cursor: "pointer",
+                }}>Delete</button>
+              </div>
+            </div>
+          )}
+
+          {view === "edit" && (
+            <div style={{ paddingTop: 16 }}>
+              {fieldLabel("DATE WORN")}
+              <input
+                type="date"
+                value={editDate}
+                onChange={(e) => setEditDate(e.target.value)}
+                style={{
+                  width: "100%", padding: "12px 14px", borderRadius: 8,
+                  border: `1px solid ${T.line}`, background: T.cardUp,
+                  color: T.bone, fontSize: 14, fontFamily: sans,
+                  marginBottom: 12, colorScheme: "dark",
+                }}
+              />
+              {pieces.length > 0 && (
+                <>
+                  {fieldLabel("PIECES WORN")}
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 14 }}>
+                    {pieces.map((p) => {
+                      const on = editPieceIds.includes(p.id);
+                      return (
+                        <button key={p.id} onClick={() => toggleEditPiece(p.id)} style={{
+                          padding: "5px 10px", borderRadius: 20, fontSize: 11, fontFamily: mono,
+                          border: `1px solid ${on ? T.tobacco : T.line}`,
+                          background: on ? T.tobacco : "transparent",
+                          color: on ? T.bg : T.stone, cursor: "pointer",
+                        }}>{p.name}</button>
+                      );
+                    })}
+                  </div>
+                </>
+              )}
+              {fieldLabel("OCCASION")}
+              <input
+                value={editOccasion}
+                onChange={(e) => setEditOccasion(e.target.value)}
+                placeholder="optional"
+                style={{
+                  width: "100%", padding: "12px 14px", borderRadius: 8,
+                  border: `1px solid ${T.line}`, background: T.cardUp,
+                  color: T.bone, fontSize: 14, fontFamily: sans, marginBottom: 12,
+                }}
+              />
+              {fieldLabel("NOTE")}
+              <textarea
+                value={editNote}
+                onChange={(e) => setEditNote(e.target.value)}
+                placeholder="optional"
+                rows={3}
+                style={{
+                  width: "100%", padding: "12px 14px", borderRadius: 8,
+                  border: `1px solid ${T.line}`, background: T.cardUp, color: T.bone,
+                  fontSize: 14, fontFamily: sans, resize: "vertical",
+                  marginBottom: 16, lineHeight: 1.5,
+                }}
+              />
+              <Btn onClick={handleSave} disabled={saving}>{saving ? "Saving…" : "Save changes"}</Btn>
+            </div>
+          )}
+
+          {view === "confirm" && (
+            <div style={{ paddingTop: 24, textAlign: "center" }}>
+              <div style={{ fontFamily: serif, fontSize: 22, marginBottom: 10 }}>Delete this outfit?</div>
+              <p style={{ fontSize: 14, color: T.stone, lineHeight: 1.6, margin: "0 0 24px" }}>
+                This permanently removes the outfit and its photos. Can't be undone.
+              </p>
+              <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                <button
+                  onClick={async () => { await onDelete(outfit.id); onClose(); }}
+                  style={{
+                    width: "100%", padding: "14px 16px", borderRadius: 8,
+                    border: "none", background: T.bad, color: T.bone,
+                    fontFamily: mono, fontSize: 12, letterSpacing: "0.12em",
+                    textTransform: "uppercase", cursor: "pointer",
+                  }}
+                >Yes, delete it</button>
+                <Btn ghost onClick={() => setView("detail")}>Keep it</Btn>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    </>
+  );
+}
+
+function MyOutfitsSection({ outfits, pieces, saveMyOutfit, removeMyOutfit, updateMyOutfit, saveInspo, flash }) {
+  const [expanded, setExpanded] = useState(false);
+  const [showAdd, setShowAdd] = useState(false);
+  const [detail, setDetail] = useState(null);
+  const [filterFrom, setFilterFrom] = useState("");
+  const [filterTo, setFilterTo] = useState("");
+  const [filterPieceId, setFilterPieceId] = useState(null);
+
+  const filtered = outfits.filter((o) => {
+    if (filterFrom && o.dateWorn < filterFrom) return false;
+    if (filterTo && o.dateWorn > filterTo) return false;
+    if (filterPieceId && !o.pieceIds?.includes(filterPieceId)) return false;
+    return true;
+  });
+
+  // only show pieces that appear in at least one outfit
+  const usedPieces = pieces.filter((p) => outfits.some((o) => o.pieceIds?.includes(p.id)));
+
+  const handleAddToInspo = async (outfit) => {
+    try {
+      const imgData = outfit.imageIds?.[0] ? await loadImage(outfit.imageIds[0]) : null;
+      const inspoItem = {
+        id: "i" + Date.now(),
+        added: Date.now(),
+        image: imgData || "",
+        vibe: outfit.occasion || `My outfit · ${outfit.dateWorn}`,
+        sourceType: "my-outfit",
+        sourceId: outfit.id,
+      };
+      await saveInspo(inspoItem);
+      await updateMyOutfit({ ...outfit, inInspo: true });
+      flash("Added to inspo board");
+      setDetail((d) => (d?.id === outfit.id ? { ...d, inInspo: true } : d));
+    } catch (e) {
+      flash("Couldn't add to inspo — try again");
+    }
+  };
+
+  return (
+    <div style={{ marginTop: 28, borderTop: `1px solid ${T.line}`, paddingTop: 20 }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+        <button
+          onClick={() => setExpanded((e) => !e)}
+          style={{ background: "none", border: "none", padding: 0, cursor: "pointer", display: "flex", alignItems: "center", gap: 8 }}
+        >
+          <div style={{ fontFamily: serif, fontSize: 22, color: T.bone }}>My Outfits</div>
+          <div style={{ fontFamily: mono, fontSize: 10, color: T.faint }}>
+            {outfits.length > 0 ? `${outfits.length} · ` : ""}{expanded ? "−" : "+"}
+          </div>
+        </button>
+        {expanded && (
+          <button onClick={() => setShowAdd(true)} style={{
+            padding: "7px 12px", borderRadius: 20,
+            border: `1px solid ${T.tobacco}`, background: "none", color: T.tobacco,
+            fontFamily: mono, fontSize: 10, letterSpacing: "0.1em",
+            textTransform: "uppercase", cursor: "pointer",
+          }}>+ Add</button>
+        )}
+      </div>
+
+      {expanded && (
+        <div style={{ marginTop: 14, animation: "rise .25s ease" }}>
+          {outfits.length > 0 && (
+            <div style={{ marginBottom: 14 }}>
+              <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+                <input
+                  type="date"
+                  value={filterFrom}
+                  onChange={(e) => setFilterFrom(e.target.value)}
+                  style={{
+                    flex: 1, padding: "8px 10px", borderRadius: 6,
+                    border: `1px solid ${T.line}`, background: T.cardUp,
+                    color: filterFrom ? T.bone : T.faint,
+                    fontSize: 12, fontFamily: sans, colorScheme: "dark",
+                  }}
+                />
+                <input
+                  type="date"
+                  value={filterTo}
+                  onChange={(e) => setFilterTo(e.target.value)}
+                  style={{
+                    flex: 1, padding: "8px 10px", borderRadius: 6,
+                    border: `1px solid ${T.line}`, background: T.cardUp,
+                    color: filterTo ? T.bone : T.faint,
+                    fontSize: 12, fontFamily: sans, colorScheme: "dark",
+                  }}
+                />
+                {(filterFrom || filterTo) && (
+                  <button
+                    onClick={() => { setFilterFrom(""); setFilterTo(""); }}
+                    style={{ border: "none", background: "none", color: T.faint, fontSize: 16, cursor: "pointer", padding: "0 4px" }}
+                  >×</button>
+                )}
+              </div>
+              {usedPieces.length > 0 && (
+                <div style={{ display: "flex", gap: 6, overflowX: "auto", paddingBottom: 4 }}>
+                  <button onClick={() => setFilterPieceId(null)} style={{
+                    padding: "4px 10px", borderRadius: 20, whiteSpace: "nowrap",
+                    border: `1px solid ${filterPieceId === null ? T.tobacco : T.line}`,
+                    background: filterPieceId === null ? T.tobacco : "transparent",
+                    color: filterPieceId === null ? T.bg : T.stone,
+                    fontFamily: mono, fontSize: 9, letterSpacing: "0.08em",
+                    textTransform: "uppercase", cursor: "pointer",
+                  }}>All</button>
+                  {usedPieces.map((p) => (
+                    <button key={p.id} onClick={() => setFilterPieceId((prev) => prev === p.id ? null : p.id)} style={{
+                      padding: "4px 10px", borderRadius: 20, whiteSpace: "nowrap",
+                      border: `1px solid ${filterPieceId === p.id ? T.tobacco : T.line}`,
+                      background: filterPieceId === p.id ? T.tobacco : "transparent",
+                      color: filterPieceId === p.id ? T.bg : T.stone,
+                      fontFamily: mono, fontSize: 9, letterSpacing: "0.08em",
+                      textTransform: "uppercase", cursor: "pointer",
+                    }}>{p.name}</button>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
+          {filtered.length > 0 ? (
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+              {filtered.map((o) => (
+                <OutfitCard key={o.id} outfit={o} onClick={() => setDetail(o)} />
+              ))}
+            </div>
+          ) : outfits.length > 0 ? (
+            <div style={{ padding: "24px 0", textAlign: "center", fontFamily: mono, fontSize: 12, color: T.faint }}>
+              No outfits match those filters.
+            </div>
+          ) : (
+            <div style={{ padding: "32px 12px", textAlign: "center" }}>
+              <div style={{ fontFamily: serif, fontSize: 20, color: T.stone }}>Nothing logged yet.</div>
+              <div style={{ fontSize: 13, color: T.faint, marginTop: 8, lineHeight: 1.6 }}>
+                Add your first outfit above.
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {showAdd && (
+        <OutfitAddFlow pieces={pieces} onSave={saveMyOutfit} onClose={() => setShowAdd(false)} flash={flash} />
+      )}
+      {detail && (
+        <OutfitDetail
+          outfit={detail}
+          pieces={pieces}
+          onClose={() => setDetail(null)}
+          onDelete={removeMyOutfit}
+          onUpdate={updateMyOutfit}
+          onAddToInspo={handleAddToInspo}
+          flash={flash}
+        />
       )}
     </div>
   );

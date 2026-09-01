@@ -1,5 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { saveImage, loadImage, deleteImages } from "./imageStore";
+import { WardrobeIcon, OutfitsIcon, ScanIcon, InsightsIcon, LookbookIcon } from "./NavIcons";
+import { runMigrations, normalizeUser, normalizePreferences } from "./migrations";
 
 // ————————————————————————————————————————————————
 // ARCHIVE — a personal wardrobe index + AI stylist
@@ -21,6 +23,16 @@ const T = {
 };
 
 const CATEGORIES = ["top", "bottom", "shoes", "outerwear", "accessory"];
+
+// ———— profile-screen option sets ————
+const FIT_TOP_OPTIONS = ["muscle", "slim", "regular", "relaxed", "oversized"];
+const FIT_BOTTOM_OPTIONS = ["skinny", "slim", "regular", "relaxed", "loose"];
+const CUFFING_OPTIONS = ["cuffed", "uncuffed", "no preference"];
+const LENGTH_OPTIONS = ["no break", "slight break", "full break", "no preference"];
+const BUILD_OPTIONS = ["slim", "athletic", "average", "stocky", "broad", "tall"];
+const COLOR_OPTIONS = ["black", "white", "gray", "navy", "brown", "beige", "olive", "burgundy", "red", "orange", "yellow", "green", "blue", "purple", "pink"];
+const OCCASION_PRESETS = ["work", "gym", "going out", "date night", "weekend", "travel", "formal events", "church"];
+const STORE_PRESETS = ["Nordstrom", "Uniqlo", "J.Crew", "Everlane", "Zara", "Target", "Thrift/Vintage", "Online marketplaces"];
 
 const DEFAULT_PROFILE = `Tonal earth tones — espresso, olive, cream, stone. Matte finishes over gloss. Quiet-luxury silhouettes with a boom-bap edge: lug soles, chunky loafers, knit polos, relaxed tailoring. No loud logos, no shiny leather. Pieces should layer and photograph well.`;
 
@@ -49,7 +61,7 @@ const TOUCH = { min: 44, gap: 8 };
 
 const SAFE_TOP = "env(safe-area-inset-top, 0px)";
 const SAFE_BOTTOM = "env(safe-area-inset-bottom, 0px)";
-const NAV_HEIGHT = 49; // pt, excludes safe-area inset — add SAFE_BOTTOM on top when laying out
+const NAV_HEIGHT = 64; // pt, excludes safe-area inset — add SAFE_BOTTOM on top when laying out
 
 const LAYOUT = { screenMargin: 16, maxWidth: 600 };
 
@@ -174,6 +186,9 @@ const isoDaysAgo = (n) => { const d = new Date(); d.setDate(d.getDate() - n); re
 const isoMonthsAgo = (n) => { const d = new Date(); d.setMonth(d.getMonth() - n); return d.toISOString().slice(0, 10); };
 const fmtShortDate = (iso) => new Date(iso + "T12:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric" });
 
+// stable id for an assessment profile — independent of rank, which can reorder between runs
+const genProfileId = () => "prof_" + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+
 // ————————————————————————————————————————————————
 
 export default function Archive() {
@@ -181,6 +196,8 @@ export default function Archive() {
   const [pieces, setPieces] = useState([]);
   const [inspo, setInspo] = useState([]);
   const [profile, setProfile] = useState(DEFAULT_PROFILE);
+  const [preferences, setPreferences] = useState(null);
+  const [user, setUser] = useState(null);
   const [assessment, setAssessment] = useState(null);
   const [savedFits, setSavedFits] = useState([]);
   const [gaps, setGaps] = useState(null);
@@ -198,9 +215,8 @@ export default function Archive() {
   useEffect(() => {
     const el = topBarRef.current;
     if (!el || typeof ResizeObserver === "undefined") return;
-    const ro = new ResizeObserver((entries) => {
-      for (const entry of entries) setTopBarHeight(entry.contentRect.height);
-    });
+    // contentRect excludes the element's own padding (e.g. the safe-area inset) — measure the real border-box instead
+    const ro = new ResizeObserver(() => setTopBarHeight(el.getBoundingClientRect().height));
     ro.observe(el);
     return () => ro.disconnect();
   }, []);
@@ -213,9 +229,7 @@ export default function Archive() {
   useEffect(() => {
     const el = bottomBarRef.current;
     if (!el || typeof ResizeObserver === "undefined") return;
-    const ro = new ResizeObserver((entries) => {
-      for (const entry of entries) setBottomBarHeight(entry.contentRect.height);
-    });
+    const ro = new ResizeObserver(() => setBottomBarHeight(el.getBoundingClientRect().height));
     ro.observe(el);
     return () => ro.disconnect();
   }, []);
@@ -223,6 +237,7 @@ export default function Archive() {
   // load everything once
   useEffect(() => {
     (async () => {
+      await runMigrations();
       try {
         const listing = await window.storage.list("piece:");
         const keys = listing?.keys || [];
@@ -250,8 +265,14 @@ export default function Archive() {
         setInspo(loadedInspo);
       } catch (e) {}
       try {
-        const p = await window.storage.get("style-profile");
-        if (p?.value) setProfile(p.value);
+        const prefs = await window.storage.get("local:preferences");
+        const normalized = normalizePreferences(prefs?.value ? JSON.parse(prefs.value) : null);
+        setPreferences(normalized);
+        if (normalized.style) setProfile(normalized.style);
+      } catch (e) {}
+      try {
+        const u = await window.storage.get("local:user");
+        setUser(normalizeUser(u?.value ? JSON.parse(u.value) : null));
       } catch (e) {}
       try {
         const a = await window.storage.get("style-assessment");
@@ -336,9 +357,34 @@ export default function Archive() {
 
   const saveProfile = async (text) => {
     setProfile(text);
+    const updated = { ...(preferences || {}), style: text, updatedAt: Date.now() };
+    setPreferences(updated);
     try {
-      await window.storage.set("style-profile", text);
-    } catch (e) {}
+      await window.storage.set("local:preferences", JSON.stringify(updated));
+    } catch (e) {
+      flash("Saved to session only — storage unavailable");
+    }
+  };
+
+  const savePreferences = async (updated) => {
+    const withTimestamp = { ...updated, updatedAt: Date.now() };
+    setPreferences(withTimestamp);
+    if ("style" in updated) setProfile(updated.style);
+    try {
+      await window.storage.set("local:preferences", JSON.stringify(withTimestamp));
+    } catch (e) {
+      flash("Saved to session only — storage unavailable");
+    }
+  };
+
+  const saveUser = async (updated) => {
+    const withTimestamp = { ...updated, updatedAt: Date.now() };
+    setUser(withTimestamp);
+    try {
+      await window.storage.set("local:user", JSON.stringify(withTimestamp));
+    } catch (e) {
+      flash("Saved to session only — storage unavailable");
+    }
   };
 
   const saveInspo = async (item) => {
@@ -549,7 +595,7 @@ export default function Archive() {
         <div
           style={{
             position: "fixed",
-            bottom: 88,
+            bottom: bottomBarHeight + SPACE.sm,
             left: "50%",
             transform: "translateX(-50%)",
             background: T.bone,
@@ -573,6 +619,10 @@ export default function Archive() {
           onClose={() => setProfileOpen(false)}
           profile={profile}
           saveProfile={saveProfile}
+          preferences={preferences}
+          savePreferences={savePreferences}
+          user={user}
+          saveUser={saveUser}
           inspo={inspo}
           pieces={pieces}
           myOutfits={myOutfits}
@@ -957,26 +1007,643 @@ function TopBar({ topBarRef, onProfileClick }) {
   );
 }
 
-function ProfileScreen({ onClose, profile, saveProfile, inspo, pieces, myOutfits, assessment, saveAssessment, flash }) {
-  const [draft, setDraft] = useState(profile);
-  const [assessBusy, setAssessBusy] = useState(false);
+function Toggle({ checked, onChange }) {
+  return (
+    <button
+      role="switch"
+      aria-checked={checked}
+      onClick={(e) => { e.stopPropagation(); onChange(!checked); }}
+      style={{
+        width: 46,
+        height: 27,
+        borderRadius: RADIUS.pill,
+        border: "none",
+        padding: 2,
+        cursor: "pointer",
+        background: checked ? T.tobacco : T.line,
+        flexShrink: 0,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: checked ? "flex-end" : "flex-start",
+        transition: "background 150ms ease",
+      }}
+    >
+      <span style={{ width: 23, height: 23, borderRadius: "50%", background: T.bone, display: "block" }} />
+    </button>
+  );
+}
 
+function SettingsRow({ label, description, value, onClick, last }) {
+  return (
+    <button
+      onClick={onClick}
+      style={{
+        width: "100%",
+        display: "flex",
+        alignItems: "center",
+        gap: SPACE.sm,
+        minHeight: TOUCH.min,
+        padding: `${SPACE.sm + 2}px ${SPACE.md}px`,
+        border: "none",
+        borderBottom: last ? "none" : `1px solid ${T.line}`,
+        background: "none",
+        textAlign: "left",
+        cursor: "pointer",
+        fontFamily: sans,
+      }}
+    >
+      <div style={{ flex: 1, overflow: "hidden" }}>
+        <div style={{ ...TYPE.subhead, color: T.bone }}>{label}</div>
+        {description && (
+          <div style={{ ...TYPE.footnote, color: T.faint, marginTop: 2, lineHeight: 1.4 }}>{description}</div>
+        )}
+      </div>
+      {value && (
+        <div
+          style={{
+            ...TYPE.footnote,
+            color: T.stone,
+            textAlign: "right",
+            maxWidth: 130,
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+            flexShrink: 0,
+          }}
+        >
+          {value}
+        </div>
+      )}
+      <span style={{ color: T.faint, fontSize: 18, lineHeight: 1, flexShrink: 0 }}>›</span>
+    </button>
+  );
+}
+
+function SettingsToggleRow({ label, description, checked, onChange, last }) {
+  return (
+    <div
+      onClick={() => onChange(!checked)}
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: SPACE.sm,
+        minHeight: TOUCH.min,
+        padding: `${SPACE.sm + 2}px ${SPACE.md}px`,
+        borderBottom: last ? "none" : `1px solid ${T.line}`,
+        cursor: "pointer",
+      }}
+    >
+      <div style={{ flex: 1 }}>
+        <div style={{ ...TYPE.subhead, color: T.bone }}>{label}</div>
+        {description && (
+          <div style={{ ...TYPE.footnote, color: T.faint, marginTop: 2, lineHeight: 1.4 }}>{description}</div>
+        )}
+      </div>
+      <Toggle checked={checked} onChange={onChange} />
+    </div>
+  );
+}
+
+function SettingsSection({ title, children }) {
+  return (
+    <div style={{ marginBottom: SPACE.xl }}>
+      <div style={{ ...labelType(T.tobacco, "0.2em"), marginBottom: SPACE.sm }}>{title}</div>
+      <div style={{ background: T.card, border: `1px solid ${T.line}`, borderRadius: RADIUS.md, overflow: "hidden" }}>
+        {children}
+      </div>
+    </div>
+  );
+}
+
+function SubPageShell({ title, onBack, children }) {
+  return (
+    <div style={{ position: "fixed", inset: 0, zIndex: 100, background: T.bg, display: "flex", flexDirection: "column" }}>
+      <div style={{ paddingTop: SAFE_TOP, borderBottom: `1px solid ${T.line}`, flexShrink: 0 }}>
+        <div
+          style={{
+            maxWidth: LAYOUT.maxWidth,
+            margin: "0 auto",
+            padding: `0 ${LAYOUT.screenMargin}px`,
+            height: TOUCH.min,
+            display: "flex",
+            alignItems: "center",
+            gap: SPACE.sm,
+          }}
+        >
+          <button
+            onClick={onBack}
+            aria-label="Back"
+            style={{
+              width: TOUCH.min,
+              height: TOUCH.min,
+              marginLeft: -SPACE.md,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              border: "none",
+              background: "none",
+              color: T.faint,
+              ...TYPE.title3,
+              cursor: "pointer",
+            }}
+          >
+            ←
+          </button>
+          <div style={{ fontFamily: serif, ...TYPE.title3 }}>{title}</div>
+        </div>
+      </div>
+      <div
+        style={{
+          flex: 1,
+          overflowY: "auto",
+          maxWidth: LAYOUT.maxWidth,
+          margin: "0 auto",
+          width: "100%",
+          padding: `${SPACE.xl}px ${LAYOUT.screenMargin}px`,
+          paddingBottom: `calc(${SPACE.xxxxl}px + ${SAFE_BOTTOM})`,
+        }}
+      >
+        {children}
+      </div>
+    </div>
+  );
+}
+
+function TextField({ label, value, onChange, onBlur, placeholder, type = "text" }) {
+  return (
+    <div style={{ marginBottom: SPACE.md }}>
+      <div style={{ ...labelType(T.faint), marginBottom: SPACE.xs }}>{label}</div>
+      <input
+        type={type}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        onBlur={onBlur}
+        placeholder={placeholder}
+        style={{
+          width: "100%",
+          minHeight: TOUCH.min,
+          padding: `0 ${SPACE.md + 2}px`,
+          borderRadius: RADIUS.sm,
+          border: `1px solid ${T.line}`,
+          background: T.cardUp,
+          color: T.bone,
+          ...TYPE.subhead,
+          fontFamily: sans,
+        }}
+      />
+    </div>
+  );
+}
+
+function SelectChips({ label, options, value, onChange, allowClear = true }) {
+  return (
+    <div style={{ marginBottom: SPACE.md }}>
+      <div style={{ ...labelType(T.faint), marginBottom: SPACE.xs }}>{label}</div>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: TOUCH.gap }}>
+        {options.map((opt) => (
+          <button key={opt} onClick={() => onChange(allowClear && value === opt ? "" : opt)} style={chipHitStyle}>
+            <span style={chipVisualStyle(value === opt)}>{opt}</span>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function MultiSelectChips({ label, presets, selected, onToggle, onAddCustom }) {
+  const [custom, setCustom] = useState("");
+  const extra = selected.filter((s) => !presets.includes(s));
+  const add = () => {
+    const v = custom.trim();
+    if (v) onAddCustom(v);
+    setCustom("");
+  };
+  return (
+    <div style={{ marginBottom: SPACE.md }}>
+      <div style={{ ...labelType(T.faint), marginBottom: SPACE.xs }}>{label}</div>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: TOUCH.gap, marginBottom: SPACE.sm }}>
+        {[...presets, ...extra].map((opt) => (
+          <button key={opt} onClick={() => onToggle(opt)} style={chipHitStyle}>
+            <span style={chipVisualStyle(selected.includes(opt))}>{opt}</span>
+          </button>
+        ))}
+      </div>
+      <div style={{ display: "flex", gap: SPACE.sm }}>
+        <input
+          value={custom}
+          onChange={(e) => setCustom(e.target.value)}
+          onKeyDown={(e) => { if (e.key === "Enter") add(); }}
+          placeholder="Add custom…"
+          style={{
+            flex: 1,
+            minHeight: TOUCH.min,
+            padding: `0 ${SPACE.md}px`,
+            borderRadius: RADIUS.sm,
+            border: `1px solid ${T.line}`,
+            background: T.cardUp,
+            color: T.bone,
+            ...TYPE.subhead,
+            fontFamily: sans,
+          }}
+        />
+        <button
+          onClick={add}
+          style={{
+            minWidth: TOUCH.min,
+            minHeight: TOUCH.min,
+            borderRadius: RADIUS.sm,
+            border: `1px solid ${T.tobacco}`,
+            background: "none",
+            color: T.tobacco,
+            fontFamily: mono,
+            ...TYPE.caption,
+            letterSpacing: "0.1em",
+            textTransform: "uppercase",
+            cursor: "pointer",
+          }}
+        >
+          Add
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function AccountSubPage({ user, saveUser, onBack }) {
+  const [name, setName] = useState(user.name || "");
+  const [email, setEmail] = useState(user.email || "");
+  const [mobile, setMobile] = useState(user.mobile || "");
+
+  return (
+    <SubPageShell title="Account" onBack={onBack}>
+      <p style={{ ...TYPE.footnote, color: T.faint, margin: `0 0 ${SPACE.lg}px`, lineHeight: 1.6 }}>
+        Stub for now — sign-in and account deletion get added when logins land.
+      </p>
+      <TextField label="NAME" value={name} onChange={setName} placeholder="Your name" />
+      <TextField label="EMAIL" value={email} onChange={setEmail} placeholder="you@example.com" type="email" />
+      <TextField label="MOBILE" value={mobile} onChange={setMobile} placeholder="(555) 555-5555" type="tel" />
+      <Btn onClick={() => saveUser({ ...user, name, email, mobile })}>Save</Btn>
+    </SubPageShell>
+  );
+}
+
+function AboutYouSubPage({ user, saveUser, onBack }) {
+  const b = user.bodyInfo || {};
+  const [height, setHeight] = useState(b.height ?? "");
+  const [weight, setWeight] = useState(b.weight ?? "");
+  const [age, setAge] = useState(b.age ?? "");
+  const [build, setBuild] = useState(b.build || "");
+
+  const save = () =>
+    saveUser({ ...user, bodyInfo: { height: height || null, weight: weight || null, age: age || null, build } });
+
+  return (
+    <SubPageShell title="About you" onBack={onBack}>
+      <p style={{ ...TYPE.footnote, color: T.faint, margin: `0 0 ${SPACE.lg}px`, lineHeight: 1.6 }}>
+        All optional — these only improve fit advice, nothing here is shown anywhere else.
+      </p>
+      <TextField label="HEIGHT" value={height} onChange={setHeight} placeholder={`e.g. 5'10"`} />
+      <TextField label="WEIGHT" value={weight} onChange={setWeight} placeholder="e.g. 165 lb" />
+      <TextField label="AGE" value={age} onChange={setAge} placeholder="e.g. 32" type="number" />
+      <SelectChips label="BUILD" options={BUILD_OPTIONS} value={build} onChange={setBuild} />
+      <Btn onClick={save}>Save</Btn>
+    </SubPageShell>
+  );
+}
+
+function SizesSubPage({ user, saveUser, onBack }) {
+  const s = user.sizes || {};
+  const [top, setTop] = useState(s.top || "");
+  const [waist, setWaist] = useState(s.bottom?.waist || "");
+  const [inseam, setInseam] = useState(s.bottom?.inseam || "");
+  const [shoe, setShoe] = useState(s.shoe || "");
+  const [outerwear, setOuterwear] = useState(s.outerwear || "");
+
+  const save = () => saveUser({ ...user, sizes: { top, bottom: { waist, inseam }, shoe, outerwear } });
+
+  return (
+    <SubPageShell title="Sizes" onBack={onBack}>
+      <TextField label="TOPS" value={top} onChange={setTop} placeholder="e.g. M, 15.5/34" />
+      <TextField label="BOTTOMS — WAIST" value={waist} onChange={setWaist} placeholder="e.g. 32" />
+      <TextField label="BOTTOMS — INSEAM" value={inseam} onChange={setInseam} placeholder="e.g. 32" />
+      <TextField label="SHOES" value={shoe} onChange={setShoe} placeholder="e.g. 10.5 US" />
+      <TextField label="OUTERWEAR" value={outerwear} onChange={setOuterwear} placeholder="e.g. L" />
+      <Btn onClick={save}>Save</Btn>
+    </SubPageShell>
+  );
+}
+
+function MyStyleSubPage({ profile, saveProfile, onBack }) {
+  const [draft, setDraft] = useState(profile);
   useEffect(() => setDraft(profile), [profile]);
 
-  const unsaved = draft !== profile;
-  const fp = draft.trim() + "|" + inspo.map((i) => i.id).join(",") + "|" + myOutfits.map((o) => o.id).join(",");
+  return (
+    <SubPageShell title="My Style" onBack={onBack}>
+      <p style={{ ...TYPE.footnote, color: T.faint, margin: `0 0 ${SPACE.md}px`, lineHeight: 1.6 }}>
+        The AI judges every fit and scan against this. Keep it honest — colors, cuts, what you never wear.
+      </p>
+      <textarea
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={() => { if (draft !== profile) saveProfile(draft); }}
+        style={{
+          width: "100%",
+          minHeight: "60vh",
+          padding: SPACE.md + 2,
+          borderRadius: RADIUS.sm,
+          border: `1px solid ${T.line}`,
+          background: T.card,
+          color: T.bone,
+          ...TYPE.subhead,
+          lineHeight: 1.6,
+          fontFamily: sans,
+          resize: "vertical",
+        }}
+      />
+      {!draft.trim() && (
+        <div style={{ padding: `${SPACE.md}px 0 0` }}>
+          <div style={{ ...TYPE.footnote, color: T.faint, lineHeight: 1.6 }}>
+            Describe your aesthetic — preferred colors, silhouettes, what you'd never wear. The more specific, the sharper the AI's suggestions.
+          </div>
+        </div>
+      )}
+    </SubPageShell>
+  );
+}
+
+function FitPreferencesSubPage({ preferences, savePreferences, onBack }) {
+  const fit = preferences.fit || {};
+  const update = (key, value) => savePreferences({ ...preferences, fit: { ...fit, [key]: value } });
+
+  return (
+    <SubPageShell title="Fit preferences" onBack={onBack}>
+      <SelectChips label="TOPS" options={FIT_TOP_OPTIONS} value={fit.top} onChange={(v) => update("top", v)} />
+      <SelectChips label="OUTERWEAR" options={FIT_TOP_OPTIONS} value={fit.outerwear} onChange={(v) => update("outerwear", v)} />
+      <SelectChips label="BOTTOMS" options={FIT_BOTTOM_OPTIONS} value={fit.bottom} onChange={(v) => update("bottom", v)} />
+      <SelectChips label="CUFFING" options={CUFFING_OPTIONS} value={fit.cuffing} onChange={(v) => update("cuffing", v)} />
+      <SelectChips label="LENGTH" options={LENGTH_OPTIONS} value={fit.length} onChange={(v) => update("length", v)} />
+    </SubPageShell>
+  );
+}
+
+function ColorsSubPage({ preferences, savePreferences, onBack }) {
+  const toggleIn = (field) => (val) => {
+    const list = preferences[field] || [];
+    const next = list.includes(val) ? list.filter((v) => v !== val) : [...list, val];
+    savePreferences({ ...preferences, [field]: next });
+  };
+  const addCustom = (field) => (val) => {
+    const list = preferences[field] || [];
+    if (!list.includes(val)) savePreferences({ ...preferences, [field]: [...list, val] });
+  };
+
+  return (
+    <SubPageShell title="Colors" onBack={onBack}>
+      <MultiSelectChips
+        label="COLORS TO AVOID"
+        presets={COLOR_OPTIONS}
+        selected={preferences.colorsToAvoid || []}
+        onToggle={toggleIn("colorsToAvoid")}
+        onAddCustom={addCustom("colorsToAvoid")}
+      />
+      <MultiSelectChips
+        label="COLORS WORN MOST"
+        presets={COLOR_OPTIONS}
+        selected={preferences.colorsWornMost || []}
+        onToggle={toggleIn("colorsWornMost")}
+        onAddCustom={addCustom("colorsWornMost")}
+      />
+    </SubPageShell>
+  );
+}
+
+function OccasionsSubPage({ preferences, savePreferences, onBack }) {
+  const selected = preferences.occasions || [];
+  const toggle = (val) => {
+    const next = selected.includes(val) ? selected.filter((v) => v !== val) : [...selected, val];
+    savePreferences({ ...preferences, occasions: next });
+  };
+  const addCustom = (val) => {
+    if (!selected.includes(val)) savePreferences({ ...preferences, occasions: [...selected, val] });
+  };
+
+  return (
+    <SubPageShell title="Occasions" onBack={onBack}>
+      <MultiSelectChips label="WHAT YOU DRESS FOR" presets={OCCASION_PRESETS} selected={selected} onToggle={toggle} onAddCustom={addCustom} />
+    </SubPageShell>
+  );
+}
+
+function StoresSubPage({ preferences, savePreferences, onBack }) {
+  const selected = preferences.stores || [];
+  const toggle = (val) => {
+    const next = selected.includes(val) ? selected.filter((v) => v !== val) : [...selected, val];
+    savePreferences({ ...preferences, stores: next });
+  };
+  const addCustom = (val) => {
+    if (!selected.includes(val)) savePreferences({ ...preferences, stores: [...selected, val] });
+  };
+
+  return (
+    <SubPageShell title="Stores" onBack={onBack}>
+      <MultiSelectChips label="WHERE YOU SHOP" presets={STORE_PRESETS} selected={selected} onToggle={toggle} onAddCustom={addCustom} />
+    </SubPageShell>
+  );
+}
+
+function BudgetSubPage({ preferences, savePreferences, onBack }) {
+  const b = preferences.budget || {};
+  const [values, setValues] = useState(
+    Object.fromEntries(CATEGORIES.map((c) => [c, { min: b[c]?.min ?? "", max: b[c]?.max ?? "" }]))
+  );
+
+  const save = () => {
+    const budget = {};
+    for (const c of CATEGORIES) {
+      budget[c] = { min: values[c].min === "" ? null : values[c].min, max: values[c].max === "" ? null : values[c].max };
+    }
+    savePreferences({ ...preferences, budget });
+  };
+
+  const fieldStyle = {
+    flex: 1,
+    minHeight: TOUCH.min,
+    padding: `0 ${SPACE.md}px`,
+    borderRadius: RADIUS.sm,
+    border: `1px solid ${T.line}`,
+    background: T.cardUp,
+    color: T.bone,
+    ...TYPE.subhead,
+    fontFamily: sans,
+  };
+
+  return (
+    <SubPageShell title="Budget" onBack={onBack}>
+      <p style={{ ...TYPE.footnote, color: T.faint, margin: `0 0 ${SPACE.lg}px`, lineHeight: 1.6 }}>
+        Typical spend range per category — used to steer gap suggestions toward realistic price points.
+      </p>
+      {CATEGORIES.map((c) => (
+        <div key={c} style={{ marginBottom: SPACE.md }}>
+          <div style={{ ...labelType(T.faint), marginBottom: SPACE.xs }}>{c.toUpperCase()}</div>
+          <div style={{ display: "flex", gap: SPACE.sm }}>
+            <input
+              value={values[c].min}
+              onChange={(e) => setValues((v) => ({ ...v, [c]: { ...v[c], min: e.target.value } }))}
+              placeholder="Min $"
+              style={fieldStyle}
+            />
+            <input
+              value={values[c].max}
+              onChange={(e) => setValues((v) => ({ ...v, [c]: { ...v[c], max: e.target.value } }))}
+              placeholder="Max $"
+              style={fieldStyle}
+            />
+          </div>
+        </div>
+      ))}
+      <Btn onClick={save}>Save</Btn>
+    </SubPageShell>
+  );
+}
+
+function UnitsSubPage({ preferences, savePreferences, onBack }) {
+  const units = preferences.appSettings?.units || "imperial";
+  const set = (v) => savePreferences({ ...preferences, appSettings: { ...preferences.appSettings, units: v } });
+
+  return (
+    <SubPageShell title="Units" onBack={onBack}>
+      <SelectChips label="MEASUREMENT SYSTEM" options={["imperial", "metric"]} value={units} onChange={set} allowClear={false} />
+    </SubPageShell>
+  );
+}
+
+function ClimateSubPage({ preferences, savePreferences, onBack }) {
+  const [climate, setClimate] = useState(preferences.climate || "");
+  return (
+    <SubPageShell title="Climate" onBack={onBack}>
+      <p style={{ ...TYPE.footnote, color: T.faint, margin: `0 0 ${SPACE.lg}px`, lineHeight: 1.6 }}>
+        Home location or climate zone — helps steer seasonal suggestions.
+      </p>
+      <TextField label="LOCATION / CLIMATE" value={climate} onChange={setClimate} placeholder="e.g. Pacific Northwest, four seasons" />
+      <Btn onClick={() => savePreferences({ ...preferences, climate })}>Save</Btn>
+    </SubPageShell>
+  );
+}
+
+function PhotoStorageSubPage({ onBack }) {
+  return (
+    <SubPageShell title="Where photos are stored" onBack={onBack}>
+      <p style={{ ...TYPE.subhead, color: T.stone, lineHeight: 1.65 }}>
+        Every photo you add — closet pieces, inspo, outfits — stays on this device. Nothing is uploaded anywhere. That's
+        local-only for now; if cloud sync or accounts are added later, you'll get a clear opt-in before anything changes.
+      </p>
+    </SubPageShell>
+  );
+}
+
+function DeleteDataSubPage({ onBack, flash }) {
+  const [confirming, setConfirming] = useState(false);
+  const [busy, setBusy] = useState(false);
+
+  const wipe = async () => {
+    setBusy(true);
+    try {
+      for (const prefix of ["piece:", "inspo:", "fit:", "want:", "myoutfit:"]) {
+        try {
+          const listing = await window.storage.list(prefix);
+          for (const k of listing?.keys || []) {
+            await window.storage.delete(k);
+          }
+        } catch (e) {}
+      }
+      for (const key of ["style-assessment", "closet-gaps", "local:user", "local:preferences", "schema-version"]) {
+        try {
+          await window.storage.delete(key);
+        } catch (e) {}
+      }
+      window.location.reload();
+    } catch (e) {
+      flash("Couldn't delete everything — try again");
+      setBusy(false);
+    }
+  };
+
+  return (
+    <SubPageShell title="Delete my data" onBack={onBack}>
+      {!confirming ? (
+        <>
+          <p style={{ ...TYPE.subhead, color: T.stone, lineHeight: 1.65, margin: `0 0 ${SPACE.lg}px` }}>
+            This permanently removes every piece, outfit, inspo image, fit, scan, and preference stored on this device.
+            There's no undo.
+          </p>
+          <button
+            onClick={() => setConfirming(true)}
+            style={{
+              width: "100%",
+              minHeight: TOUCH.min,
+              padding: `0 ${LAYOUT.screenMargin}px`,
+              borderRadius: RADIUS.sm,
+              border: `1px solid ${T.bad}`,
+              background: "none",
+              color: T.bad,
+              fontFamily: mono,
+              ...TYPE.caption,
+              letterSpacing: "0.12em",
+              textTransform: "uppercase",
+              cursor: "pointer",
+            }}
+          >
+            Delete everything
+          </button>
+        </>
+      ) : (
+        <>
+          <div style={{ fontFamily: serif, ...TYPE.title2, marginBottom: SPACE.sm }}>Are you sure?</div>
+          <p style={{ ...TYPE.subhead, color: T.stone, lineHeight: 1.6, margin: `0 0 ${SPACE.xl}px` }}>
+            This can't be undone. Everything you've catalogued will be gone.
+          </p>
+          <div style={{ display: "flex", flexDirection: "column", gap: SPACE.sm }}>
+            <button
+              onClick={wipe}
+              disabled={busy}
+              style={{
+                width: "100%",
+                minHeight: TOUCH.min,
+                padding: `0 ${LAYOUT.screenMargin}px`,
+                borderRadius: RADIUS.sm,
+                border: "none",
+                background: T.bad,
+                color: T.bone,
+                fontFamily: mono,
+                ...TYPE.caption,
+                letterSpacing: "0.12em",
+                textTransform: "uppercase",
+                cursor: busy ? "default" : "pointer",
+              }}
+            >
+              {busy ? "Deleting…" : "Yes, delete everything"}
+            </button>
+            <Btn ghost onClick={() => setConfirming(false)}>Keep it</Btn>
+          </div>
+        </>
+      )}
+    </SubPageShell>
+  );
+}
+
+function AssessmentSubPage({ profile, inspo, pieces, myOutfits, assessment, saveAssessment, flash, onBack }) {
+  const [assessBusy, setAssessBusy] = useState(false);
+
+  const fp = profile.trim() + "|" + inspo.map((i) => i.id).join(",") + "|" + myOutfits.map((o) => o.id).join(",");
   const stale = assessment && assessment.fp !== fp;
 
   const runAssessment = async () => {
     setAssessBusy(true);
     try {
-      saveProfile(draft);
       const inspoNotes = inspo.length
         ? `\n\nInspo board vibes:\n${inspo.map((i) => "- " + i.vibe).join("\n")}`
         : "\n\n(No inspo images yet.)";
-      const closetNotes = pieces.length
-        ? `\n\nCurrent closet:\n${closetSummary(pieces)}`
-        : "";
+      const closetNotes = pieces.length ? `\n\nCurrent closet:\n${closetSummary(pieces)}` : "";
       // cap sample so the payload stays reasonable
       const outfitSample = myOutfits.slice(0, 8);
       const outfitImageBlocks = [];
@@ -999,23 +1666,226 @@ function ProfileScreen({ onClose, profile, saveProfile, inspo, pieces, myOutfits
       const outfitNotes = myOutfits.length
         ? `\n\nSelf-outfit photos logged (${myOutfits.length} total):\n${outfitLines.join("\n")}`
         : "\n\n(No self-outfit photos logged yet.)";
+      const priorProfiles = assessment?.profiles || [];
+      const priorNotes = priorProfiles.length
+        ? `\n\nPrevious assessment identified these style profiles:\n${priorProfiles
+            .map((p) => `- id ${p.id}: "${p.headline}" — ${p.read}`)
+            .join("\n")}\n\nFor each profile you return now, if it's fundamentally the same style lane as one of these — even if its rank, headline wording, or pillars have shifted — set "continues_id" to that prior id. If it's a genuinely new or merged lane with no real predecessor, set "continues_id" to null. Don't force a match just because a rank lines up; rank is the thing most likely to shift between runs.`
+        : "";
       const result = await askClaude(
         [
           ...outfitImageBlocks,
           {
             type: "text",
-            text: `You are a sharp menswear stylist doing a style assessment. The client describes their style as: "${draft}"${inspoNotes}${closetNotes}${outfitNotes}${outfitImageBlocks.length ? "\n\n(Photos above are outfits they've actually worn.)" : ""}\n\nThey likely run more than one style lane at once — don't force everything into a single identity. Identify 2 to 4 DISTINCT style profiles across their stated style, inspo, closet, and outfit photos, ranked primary through quaternary by dominance. If they genuinely only run one coherent lane, return just that 1 profile rather than padding to reach a minimum. Judge every profile only against its own internal logic. Hard rules: never describe a profile as undermining, interrupting, or in tension with another; never use the phrase "blind spot"; never collapse multiple lanes into a single hybrid label to make the read tidier.\n\nFor each profile, give a 2-4 word headline, a 3-4 sentence read of what that lane actually looks like on its own terms (fit, palette, texture, occasion), 4 short pillar phrases, a "direction" (a short phrase for where the inspo board suggests this lane is heading, or "stable" if there's no signal), and an "activity" status — "active" if this lane shows up in the outfit photos, "dormant" if the closet supports it but it hasn't been worn. Then list shared_pieces: closet items that serve more than one profile, each tagged with which profile ranks they serve — frame these as the connective tissue holding the closet together, not as evidence of confusion.\n\nRespond ONLY with JSON, no markdown: {"profiles": [{"rank": "primary" | "secondary" | "tertiary" | "quaternary", "headline": "...", "read": "...", "pillars": ["...", "...", "...", "..."], "direction": "...", "activity": "active" | "dormant"}], "shared_pieces": [{"item": "short piece name", "profiles": ["primary", "secondary"]}]}`,
+            text: `You are a sharp menswear stylist doing a style assessment. The client describes their style as: "${profile}"${inspoNotes}${closetNotes}${outfitNotes}${outfitImageBlocks.length ? "\n\n(Photos above are outfits they've actually worn.)" : ""}${priorNotes}\n\nThey likely run more than one style lane at once — don't force everything into a single identity. Identify 2 to 4 DISTINCT style profiles across their stated style, inspo, closet, and outfit photos, ranked primary through quaternary by dominance. If they genuinely only run one coherent lane, return just that 1 profile rather than padding to reach a minimum. Judge every profile only against its own internal logic. Hard rules: never describe a profile as undermining, interrupting, or in tension with another; never use the phrase "blind spot"; never collapse multiple lanes into a single hybrid label to make the read tidier.\n\nFor each profile, give a 2-4 word headline, a 3-4 sentence read of what that lane actually looks like on its own terms (fit, palette, texture, occasion), 4 short pillar phrases, a "direction" (a short phrase for where the inspo board suggests this lane is heading, or "stable" if there's no signal), and an "activity" status — "active" if this lane shows up in the outfit photos, "dormant" if the closet supports it but it hasn't been worn. Then list shared_pieces: closet items that serve more than one profile, each tagged with which profile ranks they serve — frame these as the connective tissue holding the closet together, not as evidence of confusion.\n\nRespond ONLY with JSON, no markdown: {"profiles": [{"rank": "primary" | "secondary" | "tertiary" | "quaternary", "headline": "...", "read": "...", "pillars": ["...", "...", "...", "..."], "direction": "...", "activity": "active" | "dormant", "continues_id": "prior profile id this lane continues, or null if it's new"}], "shared_pieces": [{"item": "short piece name", "profiles": ["primary", "secondary"]}]}`,
           },
         ],
         2000
       );
-      await saveAssessment({ profiles: result.profiles, shared_pieces: result.shared_pieces || [], fp, at: Date.now() });
+      const priorIds = new Set(priorProfiles.map((p) => p.id));
+      const claimed = new Set();
+      const profiles = (result.profiles || []).map((p) => {
+        const { continues_id, ...rest } = p;
+        let id = null;
+        if (continues_id && priorIds.has(continues_id) && !claimed.has(continues_id)) {
+          id = continues_id;
+          claimed.add(continues_id);
+        }
+        return { ...rest, id: id || genProfileId() };
+      });
+      await saveAssessment({ profiles, shared_pieces: result.shared_pieces || [], fp, at: Date.now() });
       flash("Assessment updated");
     } catch (e) {
       flash("Assessment failed — try again");
     }
     setAssessBusy(false);
   };
+
+  return (
+    <SubPageShell title="Style Assessment" onBack={onBack}>
+      <p style={{ ...TYPE.footnote, color: T.faint, margin: `0 0 ${SPACE.md}px`, lineHeight: 1.6 }}>
+        A synthesis of your written profile, inspo board, closet, and outfit photos — broken into the distinct style
+        lanes actually running through your closet.
+      </p>
+      {stale && !assessBusy && (
+        <div style={{ ...TYPE.caption, fontFamily: mono, color: T.tobacco, marginBottom: SPACE.sm, animation: "rise .3s ease" }}>
+          Your profile, inspo, or outfits changed since this assessment.
+        </div>
+      )}
+      <Btn onClick={runAssessment} disabled={assessBusy}>
+        {assessBusy ? "Assessing…" : assessment ? "Update assessment" : "Run assessment"}
+      </Btn>
+      {assessBusy && <Thinking label="Reading between your pieces…" />}
+      {assessment ? (
+        <div style={{ marginTop: SPACE.md, animation: "rise .3s ease" }}>
+          {(assessment.profiles || []).map((prof, idx) => (
+            <div
+              key={idx}
+              style={{
+                background: T.card,
+                border: `1px solid ${stale ? T.tobacco : T.line}`,
+                borderRadius: RADIUS.md,
+                padding: `${SPACE.lg - 2}px ${SPACE.md + 4}px`,
+                marginBottom: SPACE.md,
+              }}
+            >
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                <div style={labelType(T.tobacco, "0.2em")}>{(prof.rank || "").toUpperCase()}</div>
+                {prof.activity && (
+                  <div
+                    style={{
+                      ...labelType(prof.activity === "active" ? T.olive : T.faint, "0.1em"),
+                      padding: "3px 8px",
+                      borderRadius: RADIUS.pill,
+                      border: `1px solid ${prof.activity === "active" ? T.olive : T.line}`,
+                    }}
+                  >
+                    {prof.activity}
+                  </div>
+                )}
+              </div>
+              <div style={{ fontFamily: serif, ...TYPE.title1, margin: `${SPACE.xs}px 0 ${SPACE.sm + 2}px` }}>{prof.headline}</div>
+              <p style={{ ...TYPE.subhead, lineHeight: 1.65, color: T.stone, margin: `0 0 ${SPACE.md}px` }}>{prof.read}</p>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: TOUCH.gap, marginBottom: prof.direction ? SPACE.md : 0 }}>
+                {(prof.pillars || []).map((p, i) => (
+                  <span
+                    key={i}
+                    style={{
+                      padding: "5px 11px",
+                      borderRadius: RADIUS.pill,
+                      border: `1px solid ${T.line}`,
+                      background: T.cardUp,
+                      fontFamily: mono,
+                      ...TYPE.caption,
+                      letterSpacing: "0.08em",
+                      color: T.bone,
+                      textTransform: "uppercase",
+                    }}
+                  >
+                    {p}
+                  </span>
+                ))}
+              </div>
+              {prof.direction && (
+                <div style={{ ...TYPE.footnote, lineHeight: 1.55, color: T.stone, borderLeft: `2px solid ${T.olive}`, paddingLeft: SPACE.sm + 2 }}>
+                  <span style={labelType(T.olive, "0.15em")}>DIRECTION: </span>
+                  {prof.direction}
+                </div>
+              )}
+            </div>
+          ))}
+          {assessment.shared_pieces?.length > 0 && (
+            <div>
+              <div style={{ ...labelType(T.tobacco, "0.2em"), marginBottom: SPACE.sm }}>SHARED PIECES</div>
+              <div style={{ display: "flex", flexDirection: "column", gap: TOUCH.gap }}>
+                {assessment.shared_pieces.map((sp, i) => (
+                  <div
+                    key={i}
+                    style={{
+                      ...TYPE.footnote,
+                      lineHeight: 1.5,
+                      color: T.stone,
+                      background: T.card,
+                      border: `1px solid ${T.line}`,
+                      borderRadius: RADIUS.sm,
+                      padding: `${SPACE.sm + 2}px ${SPACE.md}px`,
+                    }}
+                  >
+                    <span style={{ color: T.bone }}>{sp.item}</span>
+                    <span style={{ color: T.faint }}> — holds together {(sp.profiles || []).join(" + ")}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      ) : !assessBusy ? (
+        <div style={{ padding: `${SPACE.xl}px 0` }}>
+          <div style={{ fontFamily: serif, ...TYPE.title2, color: T.stone }}>No assessment yet.</div>
+          <div style={{ ...TYPE.footnote, color: T.faint, marginTop: SPACE.sm, lineHeight: 1.6 }}>
+            Fill in your style profile and run the assessment to see the style lanes running through your closet.
+          </div>
+        </div>
+      ) : null}
+    </SubPageShell>
+  );
+}
+
+function ProfileScreen({
+  onClose,
+  profile,
+  saveProfile,
+  preferences,
+  savePreferences,
+  user,
+  saveUser,
+  inspo,
+  pieces,
+  myOutfits,
+  assessment,
+  saveAssessment,
+  flash,
+}) {
+  const [subPage, setSubPage] = useState(null);
+  const back = () => setSubPage(null);
+  const prefs = preferences || {};
+  const usr = user || {};
+
+  const handleExport = () => {
+    try {
+      const data = {
+        user: usr,
+        preferences: prefs,
+        pieces,
+        outfits: myOutfits,
+        assessment,
+        exportedAt: new Date().toISOString(),
+      };
+      const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "archive-export-" + new Date().toISOString().slice(0, 10) + ".json";
+      a.click();
+      URL.revokeObjectURL(url);
+      flash("Exported");
+    } catch (e) {
+      flash("Export failed — try again");
+    }
+  };
+
+  if (subPage === "account") return <AccountSubPage user={usr} saveUser={saveUser} onBack={back} />;
+  if (subPage === "about") return <AboutYouSubPage user={usr} saveUser={saveUser} onBack={back} />;
+  if (subPage === "sizes") return <SizesSubPage user={usr} saveUser={saveUser} onBack={back} />;
+  if (subPage === "mystyle") return <MyStyleSubPage profile={profile} saveProfile={saveProfile} onBack={back} />;
+  if (subPage === "fit") return <FitPreferencesSubPage preferences={prefs} savePreferences={savePreferences} onBack={back} />;
+  if (subPage === "colors") return <ColorsSubPage preferences={prefs} savePreferences={savePreferences} onBack={back} />;
+  if (subPage === "occasions") return <OccasionsSubPage preferences={prefs} savePreferences={savePreferences} onBack={back} />;
+  if (subPage === "assessment")
+    return (
+      <AssessmentSubPage
+        profile={profile}
+        inspo={inspo}
+        pieces={pieces}
+        myOutfits={myOutfits}
+        assessment={assessment}
+        saveAssessment={saveAssessment}
+        flash={flash}
+        onBack={back}
+      />
+    );
+  if (subPage === "stores") return <StoresSubPage preferences={prefs} savePreferences={savePreferences} onBack={back} />;
+  if (subPage === "budget") return <BudgetSubPage preferences={prefs} savePreferences={savePreferences} onBack={back} />;
+  if (subPage === "units") return <UnitsSubPage preferences={prefs} savePreferences={savePreferences} onBack={back} />;
+  if (subPage === "climate") return <ClimateSubPage preferences={prefs} savePreferences={savePreferences} onBack={back} />;
+  if (subPage === "photos") return <PhotoStorageSubPage onBack={back} />;
+  if (subPage === "delete") return <DeleteDataSubPage onBack={back} flash={flash} />;
+
+  const styleSummary = profile?.trim() ? profile.trim().split("\n")[0].slice(0, 60) : "Not set";
+  const assessmentSummary = assessment?.profiles?.length
+    ? assessment.profiles[0].headline + (assessment.profiles.length > 1 ? ` +${assessment.profiles.length - 1}` : "")
+    : "Not run yet";
+  const units = prefs.appSettings?.units === "metric" ? "Metric" : "Imperial";
 
   return (
     <div style={{ position: "fixed", inset: 0, zIndex: 100, background: T.bg, display: "flex", flexDirection: "column" }}>
@@ -1033,7 +1903,7 @@ function ProfileScreen({ onClose, profile, saveProfile, inspo, pieces, myOutfits
         >
           <button
             onClick={onClose}
-            aria-label="Back"
+            aria-label="Close"
             style={{
               width: TOUCH.min,
               height: TOUCH.min,
@@ -1064,165 +1934,56 @@ function ProfileScreen({ onClose, profile, saveProfile, inspo, pieces, myOutfits
           paddingBottom: `calc(${SPACE.xxxxl}px + ${SAFE_BOTTOM})`,
         }}
       >
-        {/* ── My Style (free text) ── */}
-        <div style={labelType(T.tobacco, "0.2em")}>MY STYLE</div>
-        <p style={{ ...TYPE.footnote, color: T.faint, margin: `${SPACE.xs}px 0 ${SPACE.md}px`, lineHeight: 1.6 }}>
-          The AI judges every fit and scan against this. Keep it honest — colors, cuts, what you never wear.
-        </p>
-        {unsaved && (
-          <div style={{ ...TYPE.caption, fontFamily: mono, color: T.tobacco, marginBottom: SPACE.sm, animation: "rise .3s ease" }}>
-            Unsaved changes
-          </div>
-        )}
-        <textarea
-          value={draft}
-          onChange={(e) => setDraft(e.target.value)}
-          rows={8}
-          style={{
-            width: "100%",
-            padding: SPACE.md + 2,
-            borderRadius: RADIUS.sm,
-            border: `1px solid ${T.line}`,
-            background: T.card,
-            color: T.bone,
-            ...TYPE.subhead,
-            lineHeight: 1.6,
-            fontFamily: sans,
-            resize: "vertical",
-          }}
-        />
-        {!draft.trim() && (
-          <div style={{ padding: `${SPACE.md}px 0 0`, textAlign: "center" }}>
-            <div style={{ ...TYPE.footnote, color: T.faint, lineHeight: 1.6 }}>
-              Describe your aesthetic — preferred colors, silhouettes, what you'd never wear. The more specific, the sharper the AI's suggestions.
-            </div>
-          </div>
-        )}
-        <div style={{ marginTop: SPACE.md }}>
-          <Btn onClick={() => { saveProfile(draft); flash("Profile saved"); }}>Save my style</Btn>
-        </div>
+        <SettingsSection title="YOU">
+          <SettingsRow label="Account" description="Name, email, mobile" onClick={() => setSubPage("account")} />
+          <SettingsRow label="About you" description="Height, weight, age, build" onClick={() => setSubPage("about")} />
+          <SettingsRow label="Sizes" description="Tops, bottoms, shoes, outerwear" onClick={() => setSubPage("sizes")} last />
+        </SettingsSection>
 
-        {/* ── Preferences (structured — coming soon) ── */}
-        <div style={{ height: 1, background: T.line, margin: `${SPACE.xxl}px 0 ${SPACE.lg}px` }} />
-        <div style={labelType(T.tobacco, "0.2em")}>PREFERENCES</div>
-        <p style={{ ...TYPE.footnote, color: T.faint, margin: `${SPACE.xs}px 0 0`, lineHeight: 1.6 }}>
-          Fit by category, colors to avoid, occasions dressed for, and sizes — coming soon. Account settings will live here too.
-        </p>
+        <SettingsSection title="STYLE">
+          <SettingsRow label="My Style" description="Free-text aesthetic description" value={styleSummary} onClick={() => setSubPage("mystyle")} />
+          <SettingsRow label="Fit preferences" description="Per-category fit, cuffing, length" onClick={() => setSubPage("fit")} />
+          <SettingsRow label="Colors" description="Avoid and worn most" onClick={() => setSubPage("colors")} />
+          <SettingsRow label="Occasions" description="What you dress for" onClick={() => setSubPage("occasions")} />
+          <SettingsRow
+            label="Style assessment"
+            description="AI read of your style lanes"
+            value={assessmentSummary}
+            onClick={() => setSubPage("assessment")}
+            last
+          />
+        </SettingsSection>
 
-        {/* ── Style Assessment ── */}
-        <div style={{ height: 1, background: T.line, margin: `${SPACE.xxl}px 0 ${SPACE.lg}px` }} />
-        <div style={labelType(T.tobacco, "0.2em")}>STYLE ASSESSMENT</div>
-        <p style={{ ...TYPE.footnote, color: T.faint, margin: `${SPACE.xs}px 0 ${SPACE.md}px`, lineHeight: 1.6 }}>
-          A synthesis of your written profile, inspo board, closet, and outfit photos — broken into the distinct style lanes actually running through your closet.
-        </p>
-        {stale && !assessBusy && (
-          <div style={{ ...TYPE.caption, fontFamily: mono, color: T.tobacco, marginBottom: SPACE.sm, animation: "rise .3s ease" }}>
-            Your profile, inspo, or outfits changed since this assessment.
-          </div>
-        )}
-        <Btn onClick={runAssessment} disabled={assessBusy}>
-          {assessBusy ? "Assessing…" : assessment ? "Update assessment" : "Run assessment"}
-        </Btn>
-        {assessBusy && <Thinking label="Reading between your pieces…" />}
-        {assessment ? (
-          <div style={{ marginTop: SPACE.md, animation: "rise .3s ease" }}>
-            {(assessment.profiles || []).map((prof, idx) => (
-              <div
-                key={idx}
-                style={{
-                  background: T.card,
-                  border: `1px solid ${stale ? T.tobacco : T.line}`,
-                  borderRadius: RADIUS.md,
-                  padding: `${SPACE.lg - 2}px ${SPACE.md + 4}px`,
-                  marginBottom: SPACE.md,
-                }}
-              >
-                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-                  <div style={labelType(T.tobacco, "0.2em")}>
-                    {(prof.rank || "").toUpperCase()}
-                  </div>
-                  {prof.activity && (
-                    <div
-                      style={{
-                        ...labelType(prof.activity === "active" ? T.olive : T.faint, "0.1em"),
-                        padding: "3px 8px",
-                        borderRadius: RADIUS.pill,
-                        border: `1px solid ${prof.activity === "active" ? T.olive : T.line}`,
-                      }}
-                    >
-                      {prof.activity}
-                    </div>
-                  )}
-                </div>
-                <div style={{ fontFamily: serif, ...TYPE.title1, margin: `${SPACE.xs}px 0 ${SPACE.sm + 2}px` }}>{prof.headline}</div>
-                <p style={{ ...TYPE.subhead, lineHeight: 1.65, color: T.stone, margin: `0 0 ${SPACE.md}px` }}>{prof.read}</p>
-                <div style={{ display: "flex", flexWrap: "wrap", gap: TOUCH.gap, marginBottom: prof.direction ? SPACE.md : 0 }}>
-                  {(prof.pillars || []).map((p, i) => (
-                    <span
-                      key={i}
-                      style={{
-                        padding: "5px 11px",
-                        borderRadius: RADIUS.pill,
-                        border: `1px solid ${T.line}`,
-                        background: T.cardUp,
-                        fontFamily: mono,
-                        ...TYPE.caption,
-                        letterSpacing: "0.08em",
-                        color: T.bone,
-                        textTransform: "uppercase",
-                      }}
-                    >
-                      {p}
-                    </span>
-                  ))}
-                </div>
-                {prof.direction && (
-                  <div style={{ ...TYPE.footnote, lineHeight: 1.55, color: T.stone, borderLeft: `2px solid ${T.olive}`, paddingLeft: SPACE.sm + 2 }}>
-                    <span style={labelType(T.olive, "0.15em")}>DIRECTION: </span>
-                    {prof.direction}
-                  </div>
-                )}
-              </div>
-            ))}
-            {assessment.shared_pieces?.length > 0 && (
-              <div>
-                <div style={{ ...labelType(T.tobacco, "0.2em"), marginBottom: SPACE.sm }}>
-                  SHARED PIECES
-                </div>
-                <div style={{ display: "flex", flexDirection: "column", gap: TOUCH.gap }}>
-                  {assessment.shared_pieces.map((sp, i) => (
-                    <div
-                      key={i}
-                      style={{
-                        ...TYPE.footnote,
-                        lineHeight: 1.5,
-                        color: T.stone,
-                        background: T.card,
-                        border: `1px solid ${T.line}`,
-                        borderRadius: RADIUS.sm,
-                        padding: `${SPACE.sm + 2}px ${SPACE.md}px`,
-                      }}
-                    >
-                      <span style={{ color: T.bone }}>{sp.item}</span>
-                      <span style={{ color: T.faint }}> — holds together {(sp.profiles || []).join(" + ")}</span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-          </div>
-        ) : !assessBusy ? (
-          <div style={{ padding: `${SPACE.xl}px ${SPACE.md}px`, textAlign: "center" }}>
-            <div style={{ fontFamily: serif, ...TYPE.title2, color: T.stone }}>No assessment yet.</div>
-            <div style={{ ...TYPE.footnote, color: T.faint, marginTop: SPACE.sm, lineHeight: 1.6 }}>
-              Fill in your style profile and run the assessment to see the style lanes running through your closet.
-            </div>
-          </div>
-        ) : null}
+        <SettingsSection title="SHOPPING">
+          <SettingsRow label="Stores" description="Where you shop" onClick={() => setSubPage("stores")} />
+          <SettingsRow label="Budget" description="Typical spend per category" onClick={() => setSubPage("budget")} last />
+        </SettingsSection>
+
+        <SettingsSection title="APP">
+          <SettingsToggleRow
+            label="Auto-tag outfits with style profiles"
+            checked={prefs.appSettings?.autoTagOutfits ?? true}
+            onChange={(v) => savePreferences({ ...prefs, appSettings: { ...prefs.appSettings, autoTagOutfits: v } })}
+          />
+          <SettingsToggleRow
+            label="Run assessment automatically"
+            checked={prefs.appSettings?.autoRunAssessment ?? false}
+            onChange={(v) => savePreferences({ ...prefs, appSettings: { ...prefs.appSettings, autoRunAssessment: v } })}
+          />
+          <SettingsRow label="Units" value={units} onClick={() => setSubPage("units")} />
+          <SettingsRow label="Climate" value={prefs.climate || "Not set"} onClick={() => setSubPage("climate")} last />
+        </SettingsSection>
+
+        <SettingsSection title="PRIVACY">
+          <SettingsRow label="Where photos are stored" description="Local-only for now" onClick={() => setSubPage("photos")} />
+          <SettingsRow label="Export my data" onClick={handleExport} />
+          <SettingsRow label="Delete my data" onClick={() => setSubPage("delete")} last />
+        </SettingsSection>
       </div>
     </div>
   );
 }
+
 
 function BottomDock({ cta, tab, setTab, dockRef }) {
   return (
@@ -1254,29 +2015,37 @@ function BottomDock({ cta, tab, setTab, dockRef }) {
         }}
       >
         {[
-          ["closet", "Closet"],
-          ["fits", "Fits"],
-          ["scan", "Scan"],
-          ["gaps", "Gaps"],
-          ["style", "Lookbook"],
-        ].map(([id, label]) => (
+          ["closet", "Wardrobe", WardrobeIcon],
+          ["fits", "Outfits", OutfitsIcon],
+          ["scan", "Scan", ScanIcon],
+          ["gaps", "Insights", InsightsIcon],
+          ["style", "Lookbook", LookbookIcon],
+        ].map(([id, label, Icon]) => (
           <button
             key={id}
             onClick={() => setTab(id)}
             style={{
               flex: 1,
               minHeight: TOUCH.min,
+              display: "flex",
+              flexDirection: "column",
+              alignItems: "center",
+              justifyContent: "center",
+              gap: SPACE.xs + 1,
+              padding: `${SPACE.sm}px 0`,
               background: "none",
               border: "none",
               borderTop: tab === id ? `2px solid ${T.tobacco}` : "2px solid transparent",
               color: tab === id ? T.bone : T.faint,
               fontFamily: mono,
               ...TYPE.caption,
-              letterSpacing: "0.1em",
+              letterSpacing: "0.05em",
               textTransform: "uppercase",
+              whiteSpace: "nowrap",
               cursor: "pointer",
             }}
           >
+            <Icon width={24} height={24} />
             {label}
           </button>
         ))}
@@ -2629,6 +3398,7 @@ function OutfitAddFlow({ pieces, profiles, onSave, onClose, flash }) {
     }
     const outfit = {
       id: "o" + Date.now(),
+      userId: null,
       sourceType: "self-photo",
       imageIds: savedIds,
       dateWorn,
@@ -2742,8 +3512,8 @@ function OutfitAddFlow({ pieces, profiles, onSave, onClose, flash }) {
                   {fieldLabel("STYLE PROFILE (optional)")}
                   <div style={{ display: "flex", flexWrap: "wrap", gap: TOUCH.gap, marginBottom: SPACE.md }}>
                     {profiles.map((p) => (
-                      <button key={p.rank} onClick={() => setProfileTag((prev) => prev === p.rank ? null : p.rank)} style={chipHitStyle}>
-                        <span style={chipVisualStyle(profileTag === p.rank)}>{p.headline}</span>
+                      <button key={p.id} onClick={() => setProfileTag((prev) => prev === p.id ? null : p.id)} style={chipHitStyle}>
+                        <span style={chipVisualStyle(profileTag === p.id)}>{p.headline}</span>
                       </button>
                     ))}
                   </div>
@@ -2808,7 +3578,7 @@ function OutfitDetail({ outfit, pieces, profiles, onClose, onDelete, onUpdate, o
   }, [outfit.id]);
 
   const linkedPieces = pieces.filter((p) => outfit.pieceIds?.includes(p.id));
-  const taggedProfile = (profiles || []).find((p) => p.rank === outfit.profileTag);
+  const taggedProfile = (profiles || []).find((p) => p.id === outfit.profileTag);
 
   const handleSave = async () => {
     setSaving(true);
@@ -2942,8 +3712,8 @@ function OutfitDetail({ outfit, pieces, profiles, onClose, onDelete, onUpdate, o
                   {fieldLabel("STYLE PROFILE")}
                   <div style={{ display: "flex", flexWrap: "wrap", gap: TOUCH.gap, marginBottom: SPACE.md }}>
                     {profiles.map((p) => (
-                      <button key={p.rank} onClick={() => setEditProfileTag((prev) => prev === p.rank ? null : p.rank)} style={chipHitStyle}>
-                        <span style={chipVisualStyle(editProfileTag === p.rank)}>{p.headline}</span>
+                      <button key={p.id} onClick={() => setEditProfileTag((prev) => prev === p.id ? null : p.id)} style={chipHitStyle}>
+                        <span style={chipVisualStyle(editProfileTag === p.id)}>{p.headline}</span>
                       </button>
                     ))}
                   </div>
@@ -3065,8 +3835,8 @@ function MyOutfitsSection({ outfits, pieces, saveMyOutfit, removeMyOutfit, updat
             <span style={chipVisualStyle(filterProfileTag === null)}>All</span>
           </button>
           {profiles.map((p) => (
-            <button key={p.rank} onClick={() => setFilterProfileTag(p.rank)} style={chipHitStyle}>
-              <span style={chipVisualStyle(filterProfileTag === p.rank)}>{p.headline}</span>
+            <button key={p.id} onClick={() => setFilterProfileTag(p.id)} style={chipHitStyle}>
+              <span style={chipVisualStyle(filterProfileTag === p.id)}>{p.headline}</span>
             </button>
           ))}
         </div>

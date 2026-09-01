@@ -2,6 +2,10 @@
 // In local dev (`npm run dev`) data stays in localStorage unless VITE_USE_API=true.
 const USE_API = import.meta.env.PROD || import.meta.env.VITE_USE_API === 'true';
 
+// keys that never sync to Neon, in prod or dev — outfits, the local user/preferences
+// records, and internal migration bookkeeping all stay device-local
+const isLocalOnly = (key) => key.startsWith('myoutfit:') || key.startsWith('local:') || key === 'schema-version';
+
 // ——— in-memory cache: list() populates it so get() needs no extra round-trips ———
 const cache = new Map();
 
@@ -27,7 +31,7 @@ const ls = {
 const api = {
   async get(key) {
     // Collections are pre-populated by list(); settings are fetched on demand.
-    if (key.startsWith('myoutfit:')) return ls.get(key);
+    if (isLocalOnly(key)) return ls.get(key);
     if (cache.has(key)) return { value: cache.get(key) };
     const res = await fetch('/api/settings?key=' + encodeURIComponent(key));
     if (!res.ok) return null;
@@ -63,7 +67,7 @@ const api = {
         headers: { 'Content-Type': 'application/json' },
         body: value,
       });
-    } else if (key.startsWith('myoutfit:')) {
+    } else if (isLocalOnly(key)) {
       await ls.set(key, value);
     } else {
       await fetch('/api/settings', {
@@ -84,7 +88,7 @@ const api = {
       await fetch('/api/fits/' + encodeURIComponent(key.slice(6)), { method: 'DELETE' });
     } else if (key.startsWith('want:')) {
       await fetch('/api/wants/' + encodeURIComponent(key.slice(5)), { method: 'DELETE' });
-    } else if (key.startsWith('myoutfit:')) {
+    } else if (isLocalOnly(key)) {
       await ls.delete(key);
     }
   },

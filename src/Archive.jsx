@@ -138,6 +138,23 @@ export default function Archive() {
   const [toast, setToast] = useState(null);
   const [anchor, setAnchor] = useState(null);
 
+  // add-pieces flow lives here so its CTA can share one fixed block with the bottom nav
+  const fileRef = useRef();
+  const [addBusy, setAddBusy] = useState(false);
+  const [addProgress, setAddProgress] = useState(null);
+  const bottomBarRef = useRef(null);
+  const [bottomBarHeight, setBottomBarHeight] = useState(0);
+
+  useEffect(() => {
+    const el = bottomBarRef.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver((entries) => {
+      for (const entry of entries) setBottomBarHeight(entry.contentRect.height);
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
   // load everything once
   useEffect(() => {
     (async () => {
@@ -225,6 +242,41 @@ export default function Archive() {
   const flash = (msg) => {
     setToast(msg);
     setTimeout(() => setToast(null), 2600);
+  };
+
+  const handleAddFiles = async (e) => {
+    const files = Array.from(e.target.files || []);
+    e.target.value = "";
+    if (!files.length) return;
+    setAddBusy(true);
+    let added = 0;
+    for (let i = 0; i < files.length; i++) {
+      setAddProgress({ done: i, total: files.length });
+      try {
+        const image = await compressImage(files[i]);
+        const tags = await askClaude([
+          imgBlock(image),
+          {
+            type: "text",
+            text: `Catalog this clothing item. Respond ONLY with JSON, no markdown: {"name": "short specific name e.g. 'Espresso lug-sole loafer'", "category": one of ${JSON.stringify(CATEGORIES)}, "color": "primary color", "material": "best guess material", "vibe": "one short phrase on the aesthetic", "seasons": ["applicable seasons"]}`,
+          },
+        ]);
+        await savePiece({
+          id: "p" + Date.now() + "_" + i,
+          added: Date.now() + i,
+          image,
+          ...tags,
+        });
+        added++;
+      } catch (err) {}
+    }
+    setAddProgress(null);
+    setAddBusy(false);
+    flash(
+      added === files.length
+        ? `Added ${added} piece${added === 1 ? "" : "s"}`
+        : `Added ${added} of ${files.length} — retry the rest`
+    );
   };
 
   const savePiece = async (piece) => {
@@ -408,12 +460,14 @@ export default function Archive() {
         ) : tab === "closet" ? (
           <Closet
             pieces={pieces}
-            savePiece={savePiece}
             removePiece={removePiece}
             updatePiece={updatePiece}
             profile={profile}
             flash={flash}
             onBuildFit={(piece) => { setAnchor(piece); setTab("fits"); }}
+            busy={addBusy}
+            progress={addProgress}
+            bottomBarHeight={bottomBarHeight}
           />
         ) : tab === "fits" ? (
           <Fits
@@ -482,47 +536,63 @@ export default function Archive() {
         </div>
       )}
 
-      {/* bottom tabs */}
-      <nav
+      {/* bottom block: add-pieces CTA (closet tab only) + nav, one opaque fixed container */}
+      <input ref={fileRef} type="file" accept="image/*" multiple style={{ display: "none" }} onChange={handleAddFiles} />
+      <div
+        ref={bottomBarRef}
         style={{
           position: "fixed",
           bottom: 0,
           left: 0,
           right: 0,
-          background: T.card,
-          borderTop: `1px solid ${T.line}`,
-          display: "flex",
+          background: T.bg,
           zIndex: 50,
         }}
       >
-        {[
-          ["closet", "Closet"],
-          ["fits", "Fits"],
-          ["scan", "Scan"],
-          ["gaps", "Gaps"],
-          ["style", "Style"],
-        ].map(([id, label]) => (
-          <button
-            key={id}
-            onClick={() => setTab(id)}
-            style={{
-              flex: 1,
-              padding: "16px 0 20px",
-              background: "none",
-              border: "none",
-              borderTop: tab === id ? `2px solid ${T.tobacco}` : "2px solid transparent",
-              color: tab === id ? T.bone : T.faint,
-              fontFamily: mono,
-              fontSize: 10,
-              letterSpacing: "0.1em",
-              textTransform: "uppercase",
-              cursor: "pointer",
-            }}
-          >
-            {label}
-          </button>
-        ))}
-      </nav>
+        {tab === "closet" && (
+          <div style={{ maxWidth: 560, margin: "0 auto", padding: "12px 16px" }}>
+            <Btn onClick={() => fileRef.current.click()} disabled={addBusy}>
+              {addBusy ? "Cataloguing…" : "+ Add pieces from photos"}
+            </Btn>
+          </div>
+        )}
+        <nav
+          style={{
+            background: T.card,
+            borderTop: `1px solid ${T.line}`,
+            display: "flex",
+            paddingBottom: "env(safe-area-inset-bottom, 0px)",
+          }}
+        >
+          {[
+            ["closet", "Closet"],
+            ["fits", "Fits"],
+            ["scan", "Scan"],
+            ["gaps", "Gaps"],
+            ["style", "Style"],
+          ].map(([id, label]) => (
+            <button
+              key={id}
+              onClick={() => setTab(id)}
+              style={{
+                flex: 1,
+                padding: "16px 0 20px",
+                background: "none",
+                border: "none",
+                borderTop: tab === id ? `2px solid ${T.tobacco}` : "2px solid transparent",
+                color: tab === id ? T.bone : T.faint,
+                fontFamily: mono,
+                fontSize: 10,
+                letterSpacing: "0.1em",
+                textTransform: "uppercase",
+                cursor: "pointer",
+              }}
+            >
+              {label}
+            </button>
+          ))}
+        </nav>
+      </div>
     </div>
   );
 }
@@ -820,57 +890,14 @@ function Thinking({ label }) {
 
 // ———— CLOSET ————
 
-function Closet({ pieces, savePiece, removePiece, updatePiece, profile, flash, onBuildFit }) {
-  const fileRef = useRef();
-  const [busy, setBusy] = useState(false);
-  const [progress, setProgress] = useState(null); // {done, total}
+function Closet({ pieces, removePiece, updatePiece, profile, flash, onBuildFit, busy, progress, bottomBarHeight }) {
   const [filter, setFilter] = useState("all");
   const [sheetPiece, setSheetPiece] = useState(null);
 
-  const handleFiles = async (e) => {
-    const files = Array.from(e.target.files || []);
-    e.target.value = "";
-    if (!files.length) return;
-    setBusy(true);
-    let added = 0;
-    for (let i = 0; i < files.length; i++) {
-      setProgress({ done: i, total: files.length });
-      try {
-        const image = await compressImage(files[i]);
-        const tags = await askClaude([
-          imgBlock(image),
-          {
-            type: "text",
-            text: `Catalog this clothing item. Respond ONLY with JSON, no markdown: {"name": "short specific name e.g. 'Espresso lug-sole loafer'", "category": one of ${JSON.stringify(CATEGORIES)}, "color": "primary color", "material": "best guess material", "vibe": "one short phrase on the aesthetic", "seasons": ["applicable seasons"]}`,
-          },
-        ]);
-        await savePiece({
-          id: "p" + Date.now() + "_" + i,
-          added: Date.now() + i,
-          image,
-          ...tags,
-        });
-        added++;
-      } catch (err) {}
-    }
-    setProgress(null);
-    setBusy(false);
-    flash(
-      added === files.length
-        ? `Added ${added} piece${added === 1 ? "" : "s"}`
-        : `Added ${added} of ${files.length} — retry the rest`
-    );
-  };
-
   const shown = filter === "all" ? pieces : pieces.filter((p) => p.category === filter);
-
-  // approximate rendered heights of the fixed nav and the docked button (incl. its own padding)
-  const NAV_HEIGHT = 88;
-  const DOCK_HEIGHT = 68;
 
   return (
     <div>
-      <input ref={fileRef} type="file" accept="image/*" multiple style={{ display: "none" }} onChange={handleFiles} />
       {busy && (
         <Thinking
           label={
@@ -921,7 +948,7 @@ function Closet({ pieces, savePiece, removePiece, updatePiece, profile, flash, o
             gridTemplateColumns: "1fr 1fr",
             gap: 10,
             marginTop: 12,
-            paddingBottom: `calc(${NAV_HEIGHT + DOCK_HEIGHT}px + env(safe-area-inset-bottom, 0px))`,
+            paddingBottom: `${bottomBarHeight}px`,
           }}
         >
           {shown.map((p) => (
@@ -942,27 +969,6 @@ function Closet({ pieces, savePiece, removePiece, updatePiece, profile, flash, o
           onBuildFit={(p) => { setSheetPiece(null); onBuildFit(p); }}
         />
       )}
-
-      <div
-        style={{
-          position: "fixed",
-          left: 0,
-          right: 0,
-          // sits flush against the nav's top edge — slight overlap absorbed by the nav's higher z-index/opaque bg, never a gap
-          bottom: `${NAV_HEIGHT - 2}px`,
-          zIndex: 40,
-          background: "rgba(27,24,21,0.92)",
-          backdropFilter: "blur(8px)",
-          WebkitBackdropFilter: "blur(8px)",
-          borderTop: `1px solid ${T.line}`,
-        }}
-      >
-        <div style={{ maxWidth: 560, margin: "0 auto", padding: "12px 16px 14px" }}>
-          <Btn onClick={() => fileRef.current.click()} disabled={busy}>
-            {busy ? "Cataloguing…" : "+ Add pieces from photos"}
-          </Btn>
-        </div>
-      </div>
     </div>
   );
 }

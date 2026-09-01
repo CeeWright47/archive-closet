@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { saveImage, loadImage, deleteImages } from "./imageStore";
 
 // ————————————————————————————————————————————————
@@ -39,6 +39,74 @@ input:focus, textarea:focus, button:focus-visible { outline: 2px solid ${T.tobac
 const serif = "'Instrument Serif', Georgia, serif";
 const mono = "ui-monospace, 'SF Mono', Menlo, monospace";
 const sans = "-apple-system, 'Helvetica Neue', Arial, sans-serif";
+
+// ———— design tokens (iOS HIG) ————
+const SPACE = { xs: 4, sm: 8, md: 12, base: 16, lg: 20, xl: 24, xxl: 32, xxxl: 40, xxxxl: 48 };
+
+const RADIUS = { sm: 8, md: 12, card: 16, sheet: 24, pill: 999 };
+
+const TOUCH = { min: 44, gap: 8 };
+
+const SAFE_TOP = "env(safe-area-inset-top, 0px)";
+const SAFE_BOTTOM = "env(safe-area-inset-bottom, 0px)";
+const NAV_HEIGHT = 49; // pt, excludes safe-area inset — add SAFE_BOTTOM on top when laying out
+
+const LAYOUT = { screenMargin: 16, maxWidth: 600 };
+
+// rem-based off the root so browser text-size/zoom settings scale it (closest web analog to Dynamic Type)
+const TYPE = {
+  masthead:   { fontSize: "2.75rem",   lineHeight: 1.05 },                  // 44 — brand exception, not an iOS text style
+  largeTitle: { fontSize: "2.125rem",  lineHeight: 1.1 },                   // 34
+  title1:     { fontSize: "1.75rem",   lineHeight: 1.15 },                  // 28
+  title2:     { fontSize: "1.375rem",  lineHeight: 1.2 },                   // 22
+  title3:     { fontSize: "1.25rem",   lineHeight: 1.25 },                  // 20
+  headline:   { fontSize: "1.0625rem", lineHeight: 1.3, fontWeight: 600 },  // 17 semibold
+  body:       { fontSize: "1.0625rem", lineHeight: 1.4 },                  // 17
+  callout:    { fontSize: "1rem",      lineHeight: 1.4 },                  // 16
+  subhead:    { fontSize: "0.9375rem", lineHeight: 1.4 },                  // 15
+  footnote:   { fontSize: "0.8125rem", lineHeight: 1.4 },                  // 13
+  caption:    { fontSize: "0.75rem",   lineHeight: 1.35 },                 // 12 — also the cap for tracked mono labels
+};
+
+// tracked, uppercase mono micro-labels (section headers, tags) — always capped at caption, never smaller
+const labelType = (color, tracking = "0.14em") => ({
+  fontFamily: mono, ...TYPE.caption, letterSpacing: tracking, color, textTransform: "uppercase",
+});
+
+// visual chip stays ~32pt tall (HIG's recognized exception for compact filter rows);
+// pair with chipHitStyle so the *tappable* box still reaches 44pt without inflating the chip
+const chipVisualStyle = (active) => ({
+  padding: `${SPACE.sm}px ${SPACE.md}px`,
+  borderRadius: RADIUS.pill,
+  border: `1px solid ${active ? T.tobacco : T.line}`,
+  background: active ? T.tobacco : "transparent",
+  color: active ? T.bg : T.stone,
+  fontFamily: mono, ...TYPE.caption,
+  letterSpacing: "0.08em",
+  textTransform: "uppercase",
+  whiteSpace: "nowrap",
+});
+
+const chipHitStyle = {
+  minHeight: TOUCH.min,
+  display: "inline-flex",
+  alignItems: "center",
+  background: "none",
+  border: "none",
+  padding: 0,
+  cursor: "pointer",
+  flexShrink: 0,
+};
+
+// same hit-slop pattern for the small piece-name toggle chips (PiecePicker)
+const toggleVisualStyle = (active) => ({
+  padding: `${SPACE.sm}px ${SPACE.md}px`,
+  borderRadius: RADIUS.pill,
+  border: `1px solid ${active ? T.tobacco : T.line}`,
+  background: active ? T.tobacco : "transparent",
+  color: active ? T.bg : T.stone,
+  fontFamily: mono, ...TYPE.footnote,
+});
 
 // ———— image compression ————
 function compressImage(file, maxDim = 480) {
@@ -101,22 +169,6 @@ const closetSummary = (pieces) =>
 const categoryCounts = (list) =>
   CATEGORIES.map((c) => ({ id: c, count: list.filter((p) => p.category === c).length })).filter((c) => c.count > 0);
 
-const pillStyle = (active) => ({
-  padding: "4px 10px", borderRadius: 20, whiteSpace: "nowrap",
-  border: `1px solid ${active ? T.tobacco : T.line}`,
-  background: active ? T.tobacco : "transparent",
-  color: active ? T.bg : T.stone,
-  fontFamily: mono, fontSize: 9, letterSpacing: "0.08em",
-  textTransform: "uppercase", cursor: "pointer",
-});
-
-const toggleStyle = (active) => ({
-  padding: "5px 10px", borderRadius: 20, fontSize: 11, fontFamily: mono,
-  border: `1px solid ${active ? T.tobacco : T.line}`,
-  background: active ? T.tobacco : "transparent",
-  color: active ? T.bg : T.stone, cursor: "pointer",
-});
-
 const todayIso = () => new Date().toISOString().slice(0, 10);
 const isoDaysAgo = (n) => { const d = new Date(); d.setDate(d.getDate() - n); return d.toISOString().slice(0, 10); };
 const isoMonthsAgo = (n) => { const d = new Date(); d.setMonth(d.getMonth() - n); return d.toISOString().slice(0, 10); };
@@ -137,13 +189,26 @@ export default function Archive() {
   const [loaded, setLoaded] = useState(false);
   const [toast, setToast] = useState(null);
   const [anchor, setAnchor] = useState(null);
+  const [profileOpen, setProfileOpen] = useState(false);
 
-  // add-pieces flow lives here so its CTA can share one fixed block with the bottom nav
-  const fileRef = useRef();
-  const [addBusy, setAddBusy] = useState(false);
-  const [addProgress, setAddProgress] = useState(null);
+  // shared top bar: fixed height (incl. safe-area inset), measured so pages can pad correctly
+  const topBarRef = useRef(null);
+  const [topBarHeight, setTopBarHeight] = useState(0);
+
+  useEffect(() => {
+    const el = topBarRef.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver((entries) => {
+      for (const entry of entries) setTopBarHeight(entry.contentRect.height);
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
+  // shared bottom dock: whichever tab is active registers its own primary action here
   const bottomBarRef = useRef(null);
   const [bottomBarHeight, setBottomBarHeight] = useState(0);
+  const [cta, setCta] = useState(null);
 
   useEffect(() => {
     const el = bottomBarRef.current;
@@ -242,41 +307,6 @@ export default function Archive() {
   const flash = (msg) => {
     setToast(msg);
     setTimeout(() => setToast(null), 2600);
-  };
-
-  const handleAddFiles = async (e) => {
-    const files = Array.from(e.target.files || []);
-    e.target.value = "";
-    if (!files.length) return;
-    setAddBusy(true);
-    let added = 0;
-    for (let i = 0; i < files.length; i++) {
-      setAddProgress({ done: i, total: files.length });
-      try {
-        const image = await compressImage(files[i]);
-        const tags = await askClaude([
-          imgBlock(image),
-          {
-            type: "text",
-            text: `Catalog this clothing item. Respond ONLY with JSON, no markdown: {"name": "short specific name e.g. 'Espresso lug-sole loafer'", "category": one of ${JSON.stringify(CATEGORIES)}, "color": "primary color", "material": "best guess material", "vibe": "one short phrase on the aesthetic", "seasons": ["applicable seasons"]}`,
-          },
-        ]);
-        await savePiece({
-          id: "p" + Date.now() + "_" + i,
-          added: Date.now() + i,
-          image,
-          ...tags,
-        });
-        added++;
-      } catch (err) {}
-    }
-    setAddProgress(null);
-    setAddBusy(false);
-    flash(
-      added === files.length
-        ? `Added ${added} piece${added === 1 ? "" : "s"}`
-        : `Added ${added} of ${files.length} — retry the rest`
-    );
   };
 
   const savePiece = async (piece) => {
@@ -434,40 +464,30 @@ export default function Archive() {
         background: T.bg,
         color: T.bone,
         fontFamily: sans,
-        paddingBottom: 96,
+        paddingBottom: bottomBarHeight,
       }}
     >
       <style>{fontCss}</style>
 
-      {/* masthead */}
-      <header style={{ padding: "28px 20px 18px", borderBottom: `1px solid ${T.line}` }}>
-        <div style={{ fontFamily: mono, fontSize: 10, letterSpacing: "0.22em", color: T.tobacco }}>
-          PERSONAL WARDROBE INDEX
-        </div>
-        <h1 style={{ fontFamily: serif, fontSize: 44, fontWeight: 400, margin: "6px 0 0", letterSpacing: "-0.01em" }}>
-          Archive<span style={{ color: T.tobacco }}>.</span>
-        </h1>
-        <div style={{ fontFamily: mono, fontSize: 11, color: T.faint, marginTop: 6 }}>
-          {pieces.length} pieces catalogued
-        </div>
-      </header>
+      <TopBar topBarRef={topBarRef} onProfileClick={() => setProfileOpen(true)} />
 
-      <main style={{ maxWidth: 560, margin: "0 auto", padding: "20px 16px" }}>
+      <main style={{ maxWidth: LAYOUT.maxWidth, margin: "0 auto", paddingTop: topBarHeight + SPACE.base, paddingBottom: SPACE.lg, paddingLeft: LAYOUT.screenMargin, paddingRight: LAYOUT.screenMargin }}>
         {!loaded ? (
-          <div style={{ fontFamily: mono, fontSize: 12, color: T.stone, animation: "pulse 1.4s infinite", padding: 24 }}>
+          <div style={{ ...TYPE.caption, fontFamily: mono, color: T.stone, animation: "pulse 1.4s infinite", padding: SPACE.xl }}>
             Opening the archive…
           </div>
         ) : tab === "closet" ? (
           <Closet
             pieces={pieces}
+            savePiece={savePiece}
             removePiece={removePiece}
             updatePiece={updatePiece}
             profile={profile}
             flash={flash}
             onBuildFit={(piece) => { setAnchor(piece); setTab("fits"); }}
-            busy={addBusy}
-            progress={addProgress}
+            setCta={setCta}
             bottomBarHeight={bottomBarHeight}
+            topBarHeight={topBarHeight}
           />
         ) : tab === "fits" ? (
           <Fits
@@ -480,9 +500,18 @@ export default function Archive() {
             flash={flash}
             anchor={anchor}
             setAnchor={setAnchor}
+            setCta={setCta}
+            bottomBarHeight={bottomBarHeight}
           />
         ) : tab === "scan" ? (
-          <Scan pieces={pieces} profile={profile} flash={flash} saveWant={saveWant} />
+          <Scan
+            pieces={pieces}
+            profile={profile}
+            flash={flash}
+            saveWant={saveWant}
+            setCta={setCta}
+            bottomBarHeight={bottomBarHeight}
+          />
         ) : tab === "gaps" ? (
           <Gaps
             pieces={pieces}
@@ -495,22 +524,23 @@ export default function Archive() {
             removeWant={removeWant}
             toggleWantOwned={toggleWantOwned}
             flash={flash}
+            setCta={setCta}
+            bottomBarHeight={bottomBarHeight}
           />
         ) : (
-          <Profile
-            profile={profile}
-            saveProfile={saveProfile}
+          <Lookbook
             inspo={inspo}
             saveInspo={saveInspo}
             removeInspo={removeInspo}
             assessment={assessment}
-            saveAssessment={saveAssessment}
             pieces={pieces}
             flash={flash}
             myOutfits={myOutfits}
             saveMyOutfit={saveMyOutfit}
             removeMyOutfit={removeMyOutfit}
             updateMyOutfit={updateMyOutfit}
+            setCta={setCta}
+            bottomBarHeight={bottomBarHeight}
           />
         )}
       </main>
@@ -525,9 +555,9 @@ export default function Archive() {
             background: T.bone,
             color: T.bg,
             fontFamily: mono,
-            fontSize: 12,
-            padding: "10px 16px",
-            borderRadius: 6,
+            ...TYPE.caption,
+            padding: `${SPACE.sm + 2}px ${SPACE.md}px`,
+            borderRadius: RADIUS.sm - 2,
             zIndex: 60,
             animation: "rise .25s ease",
           }}
@@ -536,63 +566,21 @@ export default function Archive() {
         </div>
       )}
 
-      {/* bottom block: add-pieces CTA (closet tab only) + nav, one opaque fixed container */}
-      <input ref={fileRef} type="file" accept="image/*" multiple style={{ display: "none" }} onChange={handleAddFiles} />
-      <div
-        ref={bottomBarRef}
-        style={{
-          position: "fixed",
-          bottom: 0,
-          left: 0,
-          right: 0,
-          background: T.bg,
-          zIndex: 50,
-        }}
-      >
-        {tab === "closet" && (
-          <div style={{ maxWidth: 560, margin: "0 auto", padding: "12px 16px" }}>
-            <Btn onClick={() => fileRef.current.click()} disabled={addBusy}>
-              {addBusy ? "Cataloguing…" : "+ Add pieces from photos"}
-            </Btn>
-          </div>
-        )}
-        <nav
-          style={{
-            background: T.card,
-            borderTop: `1px solid ${T.line}`,
-            display: "flex",
-            paddingBottom: "env(safe-area-inset-bottom, 0px)",
-          }}
-        >
-          {[
-            ["closet", "Closet"],
-            ["fits", "Fits"],
-            ["scan", "Scan"],
-            ["gaps", "Gaps"],
-            ["style", "Style"],
-          ].map(([id, label]) => (
-            <button
-              key={id}
-              onClick={() => setTab(id)}
-              style={{
-                flex: 1,
-                padding: "16px 0 20px",
-                background: "none",
-                border: "none",
-                borderTop: tab === id ? `2px solid ${T.tobacco}` : "2px solid transparent",
-                color: tab === id ? T.bone : T.faint,
-                fontFamily: mono,
-                fontSize: 10,
-                letterSpacing: "0.1em",
-                textTransform: "uppercase",
-                cursor: "pointer",
-              }}
-            >
-              {label}
-            </button>
-          ))}
-        </nav>
-      </div>
+      <BottomDock cta={cta} tab={tab} setTab={setTab} dockRef={bottomBarRef} />
+
+      {profileOpen && (
+        <ProfileScreen
+          onClose={() => setProfileOpen(false)}
+          profile={profile}
+          saveProfile={saveProfile}
+          inspo={inspo}
+          pieces={pieces}
+          myOutfits={myOutfits}
+          assessment={assessment}
+          saveAssessment={saveAssessment}
+          flash={flash}
+        />
+      )}
     </div>
   );
 }
@@ -605,7 +593,7 @@ function GarmentTag({ piece, onMenu, dim }) {
       style={{
         background: T.card,
         border: `1px solid ${T.line}`,
-        borderRadius: 8,
+        borderRadius: RADIUS.card,
         overflow: "hidden",
         opacity: dim ? 0.45 : 1,
         animation: "rise .3s ease",
@@ -623,7 +611,7 @@ function GarmentTag({ piece, onMenu, dim }) {
               alignItems: "center",
               justifyContent: "center",
               fontFamily: serif,
-              fontSize: 28,
+              ...TYPE.title1,
               color: T.faint,
             }}
           >
@@ -635,32 +623,48 @@ function GarmentTag({ piece, onMenu, dim }) {
             onClick={() => onMenu(piece)}
             aria-label={"Options for " + piece.name}
             style={{
+              // 44pt hit target flush to the corner; the visible chip inside stays small — HIG exception for a secondary icon control
               position: "absolute",
-              top: 6,
-              right: 6,
-              width: 28,
-              height: 28,
-              borderRadius: 14,
+              top: 0,
+              right: 0,
+              width: TOUCH.min,
+              height: TOUCH.min,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
               border: "none",
-              background: "rgba(27,24,21,.75)",
-              backdropFilter: "blur(6px)",
-              color: T.stone,
-              fontSize: 16,
+              background: "none",
+              padding: 0,
               cursor: "pointer",
-              lineHeight: 1,
-              letterSpacing: "0.05em",
             }}
           >
-            ⋯
+            <span
+              style={{
+                width: 28,
+                height: 28,
+                borderRadius: RADIUS.pill,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                background: "rgba(27,24,21,.75)",
+                backdropFilter: "blur(6px)",
+                color: T.stone,
+                fontSize: 16,
+                lineHeight: 1,
+                letterSpacing: "0.05em",
+              }}
+            >
+              ⋯
+            </span>
           </button>
         )}
       </div>
-      <div style={{ padding: "10px 10px 12px" }}>
-        <div style={{ fontFamily: mono, fontSize: 9, letterSpacing: "0.18em", color: T.tobacco, textTransform: "uppercase" }}>
+      <div style={{ padding: `${SPACE.sm}px ${SPACE.sm}px ${SPACE.md}px` }}>
+        <div style={labelType(T.tobacco, "0.18em")}>
           {piece.category}
         </div>
-        <div style={{ fontSize: 13, marginTop: 3, lineHeight: 1.3 }}>{piece.name}</div>
-        <div style={{ fontFamily: mono, fontSize: 10, color: T.faint, marginTop: 3 }}>
+        <div style={{ ...TYPE.footnote, marginTop: SPACE.xs, lineHeight: 1.3 }}>{piece.name}</div>
+        <div style={{ ...TYPE.caption, fontFamily: mono, color: T.faint, marginTop: SPACE.xs }}>
           {piece.color}
           {piece.material ? " · " + piece.material : ""}
         </div>
@@ -710,16 +714,16 @@ function BottomSheet({ piece, pieces, profile, onClose, onRemove, onUpdate, onBu
   const pairPieces = pairResult ? pieces.filter((p) => pairResult.pair_ids?.includes(p.id)) : [];
 
   const fieldLabel = (label) => (
-    <div style={{ fontFamily: mono, fontSize: 10, letterSpacing: "0.14em", color: T.faint, marginBottom: 6 }}>{label}</div>
+    <div style={{ ...labelType(T.faint), marginBottom: SPACE.xs }}>{label}</div>
   );
   const fieldInput = (value, onChange) => (
     <input
       value={value}
       onChange={(e) => onChange(e.target.value)}
       style={{
-        width: "100%", padding: "12px 14px", borderRadius: 8,
+        width: "100%", minHeight: TOUCH.min, padding: `0 ${SPACE.md + 2}px`, borderRadius: RADIUS.sm,
         border: `1px solid ${T.line}`, background: T.cardUp,
-        color: T.bone, fontSize: 14, fontFamily: sans, marginBottom: 12,
+        color: T.bone, ...TYPE.subhead, fontFamily: sans, marginBottom: SPACE.md,
       }}
     />
   );
@@ -742,47 +746,47 @@ function BottomSheet({ piece, pieces, profile, onClose, onRemove, onUpdate, onBu
         border: `1px solid ${T.line}`, borderBottom: "none",
       }}>
         {/* drag handle */}
-        <div onClick={onClose} style={{ display: "flex", justifyContent: "center", padding: "12px 0 8px", cursor: "pointer", flexShrink: 0 }}>
+        <div onClick={onClose} style={{ display: "flex", justifyContent: "center", padding: `${SPACE.md}px 0 ${SPACE.sm}px`, cursor: "pointer", flexShrink: 0 }}>
           <div style={{ width: 36, height: 4, borderRadius: 2, background: T.line }} />
         </div>
 
         {/* header */}
-        <div style={{ display: "flex", alignItems: "flex-start", gap: 12, padding: "0 16px 14px", flexShrink: 0, borderBottom: `1px solid ${T.line}` }}>
-          <div style={{ width: 56, height: 56, borderRadius: 8, overflow: "hidden", flexShrink: 0, background: T.cardUp, display: "flex", alignItems: "center", justifyContent: "center" }}>
+        <div style={{ display: "flex", alignItems: "flex-start", gap: SPACE.md, padding: `0 ${LAYOUT.screenMargin}px ${SPACE.md + 2}px`, flexShrink: 0, borderBottom: `1px solid ${T.line}` }}>
+          <div style={{ width: 56, height: 56, borderRadius: RADIUS.sm, overflow: "hidden", flexShrink: 0, background: T.cardUp, display: "flex", alignItems: "center", justifyContent: "center" }}>
             {piece.image
               ? <img src={piece.image} alt={piece.name} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
-              : <span style={{ fontFamily: serif, fontSize: 22, color: T.faint }}>{piece.name?.[0] || "?"}</span>}
+              : <span style={{ fontFamily: serif, ...TYPE.title2, color: T.faint }}>{piece.name?.[0] || "?"}</span>}
           </div>
           <div style={{ flex: 1, overflow: "hidden" }}>
-            <div style={{ fontFamily: mono, fontSize: 9, letterSpacing: "0.18em", color: T.tobacco, textTransform: "uppercase" }}>{piece.category}</div>
-            <div style={{ fontFamily: serif, fontSize: 20, lineHeight: 1.2, marginTop: 2 }}>{piece.name}</div>
-            <div style={{ fontFamily: mono, fontSize: 10, color: T.faint, marginTop: 3 }}>
+            <div style={labelType(T.tobacco, "0.18em")}>{piece.category}</div>
+            <div style={{ fontFamily: serif, ...TYPE.title3, lineHeight: 1.2, marginTop: 2 }}>{piece.name}</div>
+            <div style={{ ...TYPE.caption, fontFamily: mono, color: T.faint, marginTop: SPACE.xs }}>
               {piece.color}{piece.material ? " · " + piece.material : ""}
             </div>
           </div>
           <button
             onClick={view === "menu" ? onClose : () => setView("menu")}
             aria-label={view === "menu" ? "Close" : "Back"}
-            style={{ border: "none", background: "none", color: T.faint, fontSize: 20, cursor: "pointer", padding: 4, lineHeight: 1, flexShrink: 0 }}
+            style={{ minWidth: TOUCH.min, minHeight: TOUCH.min, border: "none", background: "none", color: T.faint, ...TYPE.title3, cursor: "pointer", padding: 4, lineHeight: 1, flexShrink: 0 }}
           >
             {view === "menu" ? "×" : "←"}
           </button>
         </div>
 
         {/* scrollable body */}
-        <div style={{ overflowY: "auto", flex: 1, padding: "0 16px 40px" }}>
+        <div style={{ overflowY: "auto", flex: 1, padding: `0 ${LAYOUT.screenMargin}px ${SPACE.xxxxl}px` }}>
 
           {/* — menu — */}
           {view === "menu" && (
             <div>
               {menuActions.map(({ title, desc, onClick, danger }) => (
                 <button key={title} onClick={onClick} style={{
-                  width: "100%", textAlign: "left", padding: "15px 0",
+                  width: "100%", textAlign: "left", minHeight: TOUCH.min, padding: `${SPACE.md - 1}px 0`,
                   border: "none", borderBottom: `1px solid ${T.line}`,
                   background: "none", cursor: "pointer", fontFamily: sans,
                 }}>
-                  <div style={{ fontSize: 15, color: danger ? T.bad : T.bone }}>{title}</div>
-                  <div style={{ fontSize: 12, color: T.faint, marginTop: 3, lineHeight: 1.4 }}>{desc}</div>
+                  <div style={{ ...TYPE.subhead, color: danger ? T.bad : T.bone }}>{title}</div>
+                  <div style={{ ...TYPE.caption, color: T.faint, marginTop: 3, lineHeight: 1.4 }}>{desc}</div>
                 </button>
               ))}
             </div>
@@ -790,13 +794,13 @@ function BottomSheet({ piece, pieces, profile, onClose, onRemove, onUpdate, onBu
 
           {/* — pairs — */}
           {view === "pairs" && (
-            <div style={{ paddingTop: 16 }}>
+            <div style={{ paddingTop: SPACE.md }}>
               {pairBusy && <Thinking label="Finding its partners…" />}
               {!pairBusy && pairResult && (
                 <>
-                  <p style={{ fontSize: 14, lineHeight: 1.65, color: T.stone, margin: "0 0 16px" }}>{pairResult.sentence}</p>
+                  <p style={{ ...TYPE.subhead, lineHeight: 1.65, color: T.stone, margin: `0 0 ${SPACE.md}px` }}>{pairResult.sentence}</p>
                   {pairPieces.length > 0 && (
-                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8, marginBottom: 16 }}>
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: SPACE.sm, marginBottom: SPACE.md }}>
                       {pairPieces.map((p) => <GarmentTag key={p.id} piece={p} />)}
                     </div>
                   )}
@@ -804,26 +808,21 @@ function BottomSheet({ piece, pieces, profile, onClose, onRemove, onUpdate, onBu
                 </>
               )}
               {!pairBusy && !pairResult && (
-                <div style={{ padding: "24px 0" }}><Btn onClick={getPairs}>Find pairs</Btn></div>
+                <div style={{ padding: `${SPACE.xl}px 0` }}><Btn onClick={getPairs}>Find pairs</Btn></div>
               )}
             </div>
           )}
 
           {/* — edit — */}
           {view === "edit" && (
-            <div style={{ paddingTop: 16 }}>
+            <div style={{ paddingTop: SPACE.md }}>
               {fieldLabel("NAME")}{fieldInput(editName, setEditName)}
               {fieldLabel("CATEGORY")}
-              <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 14 }}>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: TOUCH.gap, marginBottom: SPACE.md }}>
                 {CATEGORIES.map((c) => (
-                  <button key={c} onClick={() => setEditCategory(c)} style={{
-                    padding: "6px 12px", borderRadius: 20,
-                    border: `1px solid ${editCategory === c ? T.tobacco : T.line}`,
-                    background: editCategory === c ? T.tobacco : "transparent",
-                    color: editCategory === c ? T.bg : T.stone,
-                    fontFamily: mono, fontSize: 10, letterSpacing: "0.1em",
-                    textTransform: "uppercase", cursor: "pointer",
-                  }}>{c}</button>
+                  <button key={c} onClick={() => setEditCategory(c)} style={chipHitStyle}>
+                    <span style={chipVisualStyle(editCategory === c)}>{c}</span>
+                  </button>
                 ))}
               </div>
               {fieldLabel("COLOR")}{fieldInput(editColor, setEditColor)}
@@ -834,16 +833,16 @@ function BottomSheet({ piece, pieces, profile, onClose, onRemove, onUpdate, onBu
 
           {/* — confirm delete — */}
           {view === "confirm" && (
-            <div style={{ paddingTop: 24, textAlign: "center" }}>
-              <div style={{ fontFamily: serif, fontSize: 22, marginBottom: 10 }}>Remove this piece?</div>
-              <p style={{ fontSize: 14, color: T.stone, lineHeight: 1.6, margin: "0 0 24px" }}>
+            <div style={{ paddingTop: SPACE.xl, textAlign: "center" }}>
+              <div style={{ fontFamily: serif, ...TYPE.title2, marginBottom: SPACE.sm }}>Remove this piece?</div>
+              <p style={{ ...TYPE.subhead, color: T.stone, lineHeight: 1.6, margin: `0 0 ${SPACE.xl}px` }}>
                 This permanently deletes <strong style={{ color: T.bone }}>{piece.name}</strong> from your archive. It can't be undone.
               </p>
-              <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+              <div style={{ display: "flex", flexDirection: "column", gap: SPACE.sm }}>
                 <button onClick={() => { onRemove(piece.id); onClose(); }} style={{
-                  width: "100%", padding: "14px 16px", borderRadius: 8,
+                  width: "100%", minHeight: TOUCH.min, padding: `0 ${LAYOUT.screenMargin}px`, borderRadius: RADIUS.sm,
                   border: "none", background: T.bad, color: T.bone,
-                  fontFamily: mono, fontSize: 12, letterSpacing: "0.12em",
+                  fontFamily: mono, ...TYPE.caption, letterSpacing: "0.12em",
                   textTransform: "uppercase", cursor: "pointer",
                 }}>Yes, remove it</button>
                 <Btn ghost onClick={() => setView("menu")}>Keep it</Btn>
@@ -863,13 +862,14 @@ function Btn({ children, onClick, disabled, ghost }) {
       disabled={disabled}
       style={{
         width: "100%",
-        padding: "14px 16px",
-        borderRadius: 8,
+        minHeight: TOUCH.min,
+        padding: `${SPACE.md - 2}px ${LAYOUT.screenMargin}px`,
+        borderRadius: RADIUS.sm,
         border: ghost ? `1px solid ${T.line}` : "none",
         background: ghost ? "transparent" : disabled ? T.faint : T.tobacco,
         color: ghost ? T.stone : T.bg,
         fontFamily: mono,
-        fontSize: 12,
+        ...TYPE.caption,
         letterSpacing: "0.12em",
         textTransform: "uppercase",
         cursor: disabled ? "default" : "pointer",
@@ -882,22 +882,492 @@ function Btn({ children, onClick, disabled, ghost }) {
 
 function Thinking({ label }) {
   return (
-    <div style={{ fontFamily: mono, fontSize: 12, color: T.tobacco, padding: "18px 4px", animation: "pulse 1.4s infinite" }}>
+    <div style={{ fontFamily: mono, ...TYPE.caption, color: T.tobacco, padding: `${SPACE.lg}px ${SPACE.xs}px`, animation: "pulse 1.4s infinite" }}>
       {label}
+    </div>
+  );
+}
+
+// keeps a click handler stable across renders while always calling the latest closure — avoids re-registering a CTA on every keystroke
+function useStableCallback(fn) {
+  const ref = useRef(fn);
+  useEffect(() => {
+    ref.current = fn;
+  });
+  return useCallback((...args) => ref.current(...args), []);
+}
+
+function ProfileGlyph({ color = T.stone, size = 20 }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="12" cy="8" r="4" />
+      <path d="M4 20c0-4 3.5-7 8-7s8 3 8 7" />
+    </svg>
+  );
+}
+
+function TopBar({ topBarRef, onProfileClick }) {
+  return (
+    <div
+      ref={topBarRef}
+      style={{
+        position: "fixed",
+        top: 0,
+        left: 0,
+        right: 0,
+        zIndex: 50,
+        background: T.bg,
+        borderBottom: `1px solid ${T.line}`,
+        paddingTop: SAFE_TOP,
+      }}
+    >
+      <div
+        style={{
+          maxWidth: LAYOUT.maxWidth,
+          margin: "0 auto",
+          padding: `0 ${LAYOUT.screenMargin}px`,
+          height: TOUCH.min,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+        }}
+      >
+        <div style={{ fontFamily: serif, ...TYPE.title3 }}>
+          Archive<span style={{ color: T.tobacco }}>.</span>
+        </div>
+        <button
+          onClick={onProfileClick}
+          aria-label="Profile and preferences"
+          style={{
+            width: TOUCH.min,
+            height: TOUCH.min,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            border: "none",
+            background: "none",
+            padding: 0,
+            cursor: "pointer",
+          }}
+        >
+          <ProfileGlyph />
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function ProfileScreen({ onClose, profile, saveProfile, inspo, pieces, myOutfits, assessment, saveAssessment, flash }) {
+  const [draft, setDraft] = useState(profile);
+  const [assessBusy, setAssessBusy] = useState(false);
+
+  useEffect(() => setDraft(profile), [profile]);
+
+  const unsaved = draft !== profile;
+  const fp = draft.trim() + "|" + inspo.map((i) => i.id).join(",") + "|" + myOutfits.map((o) => o.id).join(",");
+  const stale = assessment && assessment.fp !== fp;
+
+  const runAssessment = async () => {
+    setAssessBusy(true);
+    try {
+      saveProfile(draft);
+      const inspoNotes = inspo.length
+        ? `\n\nInspo board vibes:\n${inspo.map((i) => "- " + i.vibe).join("\n")}`
+        : "\n\n(No inspo images yet.)";
+      const closetNotes = pieces.length
+        ? `\n\nCurrent closet:\n${closetSummary(pieces)}`
+        : "";
+      // cap sample so the payload stays reasonable
+      const outfitSample = myOutfits.slice(0, 8);
+      const outfitImageBlocks = [];
+      const outfitLines = [];
+      for (const o of outfitSample) {
+        const firstId = o.imageIds?.[0];
+        if (firstId) {
+          try {
+            const dataUrl = await loadImage(firstId);
+            if (dataUrl) outfitImageBlocks.push(imgBlock(dataUrl));
+          } catch (e) {}
+        }
+        const wornNames = (o.pieceIds || [])
+          .map((id) => pieces.find((p) => p.id === id)?.name)
+          .filter(Boolean);
+        outfitLines.push(
+          `- ${o.dateWorn}${o.occasion ? " · " + o.occasion : ""}${wornNames.length ? " · " + wornNames.join(", ") : ""}${o.note ? " · " + o.note : ""}`
+        );
+      }
+      const outfitNotes = myOutfits.length
+        ? `\n\nSelf-outfit photos logged (${myOutfits.length} total):\n${outfitLines.join("\n")}`
+        : "\n\n(No self-outfit photos logged yet.)";
+      const result = await askClaude(
+        [
+          ...outfitImageBlocks,
+          {
+            type: "text",
+            text: `You are a sharp menswear stylist doing a style assessment. The client describes their style as: "${draft}"${inspoNotes}${closetNotes}${outfitNotes}${outfitImageBlocks.length ? "\n\n(Photos above are outfits they've actually worn.)" : ""}\n\nThey likely run more than one style lane at once — don't force everything into a single identity. Identify 2 to 4 DISTINCT style profiles across their stated style, inspo, closet, and outfit photos, ranked primary through quaternary by dominance. If they genuinely only run one coherent lane, return just that 1 profile rather than padding to reach a minimum. Judge every profile only against its own internal logic. Hard rules: never describe a profile as undermining, interrupting, or in tension with another; never use the phrase "blind spot"; never collapse multiple lanes into a single hybrid label to make the read tidier.\n\nFor each profile, give a 2-4 word headline, a 3-4 sentence read of what that lane actually looks like on its own terms (fit, palette, texture, occasion), 4 short pillar phrases, a "direction" (a short phrase for where the inspo board suggests this lane is heading, or "stable" if there's no signal), and an "activity" status — "active" if this lane shows up in the outfit photos, "dormant" if the closet supports it but it hasn't been worn. Then list shared_pieces: closet items that serve more than one profile, each tagged with which profile ranks they serve — frame these as the connective tissue holding the closet together, not as evidence of confusion.\n\nRespond ONLY with JSON, no markdown: {"profiles": [{"rank": "primary" | "secondary" | "tertiary" | "quaternary", "headline": "...", "read": "...", "pillars": ["...", "...", "...", "..."], "direction": "...", "activity": "active" | "dormant"}], "shared_pieces": [{"item": "short piece name", "profiles": ["primary", "secondary"]}]}`,
+          },
+        ],
+        2000
+      );
+      await saveAssessment({ profiles: result.profiles, shared_pieces: result.shared_pieces || [], fp, at: Date.now() });
+      flash("Assessment updated");
+    } catch (e) {
+      flash("Assessment failed — try again");
+    }
+    setAssessBusy(false);
+  };
+
+  return (
+    <div style={{ position: "fixed", inset: 0, zIndex: 100, background: T.bg, display: "flex", flexDirection: "column" }}>
+      <div style={{ paddingTop: SAFE_TOP, borderBottom: `1px solid ${T.line}`, flexShrink: 0 }}>
+        <div
+          style={{
+            maxWidth: LAYOUT.maxWidth,
+            margin: "0 auto",
+            padding: `0 ${LAYOUT.screenMargin}px`,
+            height: TOUCH.min,
+            display: "flex",
+            alignItems: "center",
+            gap: SPACE.sm,
+          }}
+        >
+          <button
+            onClick={onClose}
+            aria-label="Back"
+            style={{
+              width: TOUCH.min,
+              height: TOUCH.min,
+              marginLeft: -SPACE.md,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              border: "none",
+              background: "none",
+              color: T.faint,
+              ...TYPE.title3,
+              cursor: "pointer",
+            }}
+          >
+            ←
+          </button>
+          <div style={{ fontFamily: serif, ...TYPE.title3 }}>Profile</div>
+        </div>
+      </div>
+      <div
+        style={{
+          flex: 1,
+          overflowY: "auto",
+          maxWidth: LAYOUT.maxWidth,
+          margin: "0 auto",
+          width: "100%",
+          padding: `${SPACE.xl}px ${LAYOUT.screenMargin}px`,
+          paddingBottom: `calc(${SPACE.xxxxl}px + ${SAFE_BOTTOM})`,
+        }}
+      >
+        {/* ── My Style (free text) ── */}
+        <div style={labelType(T.tobacco, "0.2em")}>MY STYLE</div>
+        <p style={{ ...TYPE.footnote, color: T.faint, margin: `${SPACE.xs}px 0 ${SPACE.md}px`, lineHeight: 1.6 }}>
+          The AI judges every fit and scan against this. Keep it honest — colors, cuts, what you never wear.
+        </p>
+        {unsaved && (
+          <div style={{ ...TYPE.caption, fontFamily: mono, color: T.tobacco, marginBottom: SPACE.sm, animation: "rise .3s ease" }}>
+            Unsaved changes
+          </div>
+        )}
+        <textarea
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          rows={8}
+          style={{
+            width: "100%",
+            padding: SPACE.md + 2,
+            borderRadius: RADIUS.sm,
+            border: `1px solid ${T.line}`,
+            background: T.card,
+            color: T.bone,
+            ...TYPE.subhead,
+            lineHeight: 1.6,
+            fontFamily: sans,
+            resize: "vertical",
+          }}
+        />
+        {!draft.trim() && (
+          <div style={{ padding: `${SPACE.md}px 0 0`, textAlign: "center" }}>
+            <div style={{ ...TYPE.footnote, color: T.faint, lineHeight: 1.6 }}>
+              Describe your aesthetic — preferred colors, silhouettes, what you'd never wear. The more specific, the sharper the AI's suggestions.
+            </div>
+          </div>
+        )}
+        <div style={{ marginTop: SPACE.md }}>
+          <Btn onClick={() => { saveProfile(draft); flash("Profile saved"); }}>Save my style</Btn>
+        </div>
+
+        {/* ── Preferences (structured — coming soon) ── */}
+        <div style={{ height: 1, background: T.line, margin: `${SPACE.xxl}px 0 ${SPACE.lg}px` }} />
+        <div style={labelType(T.tobacco, "0.2em")}>PREFERENCES</div>
+        <p style={{ ...TYPE.footnote, color: T.faint, margin: `${SPACE.xs}px 0 0`, lineHeight: 1.6 }}>
+          Fit by category, colors to avoid, occasions dressed for, and sizes — coming soon. Account settings will live here too.
+        </p>
+
+        {/* ── Style Assessment ── */}
+        <div style={{ height: 1, background: T.line, margin: `${SPACE.xxl}px 0 ${SPACE.lg}px` }} />
+        <div style={labelType(T.tobacco, "0.2em")}>STYLE ASSESSMENT</div>
+        <p style={{ ...TYPE.footnote, color: T.faint, margin: `${SPACE.xs}px 0 ${SPACE.md}px`, lineHeight: 1.6 }}>
+          A synthesis of your written profile, inspo board, closet, and outfit photos — broken into the distinct style lanes actually running through your closet.
+        </p>
+        {stale && !assessBusy && (
+          <div style={{ ...TYPE.caption, fontFamily: mono, color: T.tobacco, marginBottom: SPACE.sm, animation: "rise .3s ease" }}>
+            Your profile, inspo, or outfits changed since this assessment.
+          </div>
+        )}
+        <Btn onClick={runAssessment} disabled={assessBusy}>
+          {assessBusy ? "Assessing…" : assessment ? "Update assessment" : "Run assessment"}
+        </Btn>
+        {assessBusy && <Thinking label="Reading between your pieces…" />}
+        {assessment ? (
+          <div style={{ marginTop: SPACE.md, animation: "rise .3s ease" }}>
+            {(assessment.profiles || []).map((prof, idx) => (
+              <div
+                key={idx}
+                style={{
+                  background: T.card,
+                  border: `1px solid ${stale ? T.tobacco : T.line}`,
+                  borderRadius: RADIUS.md,
+                  padding: `${SPACE.lg - 2}px ${SPACE.md + 4}px`,
+                  marginBottom: SPACE.md,
+                }}
+              >
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                  <div style={labelType(T.tobacco, "0.2em")}>
+                    {(prof.rank || "").toUpperCase()}
+                  </div>
+                  {prof.activity && (
+                    <div
+                      style={{
+                        ...labelType(prof.activity === "active" ? T.olive : T.faint, "0.1em"),
+                        padding: "3px 8px",
+                        borderRadius: RADIUS.pill,
+                        border: `1px solid ${prof.activity === "active" ? T.olive : T.line}`,
+                      }}
+                    >
+                      {prof.activity}
+                    </div>
+                  )}
+                </div>
+                <div style={{ fontFamily: serif, ...TYPE.title1, margin: `${SPACE.xs}px 0 ${SPACE.sm + 2}px` }}>{prof.headline}</div>
+                <p style={{ ...TYPE.subhead, lineHeight: 1.65, color: T.stone, margin: `0 0 ${SPACE.md}px` }}>{prof.read}</p>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: TOUCH.gap, marginBottom: prof.direction ? SPACE.md : 0 }}>
+                  {(prof.pillars || []).map((p, i) => (
+                    <span
+                      key={i}
+                      style={{
+                        padding: "5px 11px",
+                        borderRadius: RADIUS.pill,
+                        border: `1px solid ${T.line}`,
+                        background: T.cardUp,
+                        fontFamily: mono,
+                        ...TYPE.caption,
+                        letterSpacing: "0.08em",
+                        color: T.bone,
+                        textTransform: "uppercase",
+                      }}
+                    >
+                      {p}
+                    </span>
+                  ))}
+                </div>
+                {prof.direction && (
+                  <div style={{ ...TYPE.footnote, lineHeight: 1.55, color: T.stone, borderLeft: `2px solid ${T.olive}`, paddingLeft: SPACE.sm + 2 }}>
+                    <span style={labelType(T.olive, "0.15em")}>DIRECTION: </span>
+                    {prof.direction}
+                  </div>
+                )}
+              </div>
+            ))}
+            {assessment.shared_pieces?.length > 0 && (
+              <div>
+                <div style={{ ...labelType(T.tobacco, "0.2em"), marginBottom: SPACE.sm }}>
+                  SHARED PIECES
+                </div>
+                <div style={{ display: "flex", flexDirection: "column", gap: TOUCH.gap }}>
+                  {assessment.shared_pieces.map((sp, i) => (
+                    <div
+                      key={i}
+                      style={{
+                        ...TYPE.footnote,
+                        lineHeight: 1.5,
+                        color: T.stone,
+                        background: T.card,
+                        border: `1px solid ${T.line}`,
+                        borderRadius: RADIUS.sm,
+                        padding: `${SPACE.sm + 2}px ${SPACE.md}px`,
+                      }}
+                    >
+                      <span style={{ color: T.bone }}>{sp.item}</span>
+                      <span style={{ color: T.faint }}> — holds together {(sp.profiles || []).join(" + ")}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        ) : !assessBusy ? (
+          <div style={{ padding: `${SPACE.xl}px ${SPACE.md}px`, textAlign: "center" }}>
+            <div style={{ fontFamily: serif, ...TYPE.title2, color: T.stone }}>No assessment yet.</div>
+            <div style={{ ...TYPE.footnote, color: T.faint, marginTop: SPACE.sm, lineHeight: 1.6 }}>
+              Fill in your style profile and run the assessment to see the style lanes running through your closet.
+            </div>
+          </div>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+function BottomDock({ cta, tab, setTab, dockRef }) {
+  return (
+    <div
+      ref={dockRef}
+      style={{
+        position: "fixed",
+        bottom: 0,
+        left: 0,
+        right: 0,
+        background: T.bg,
+        zIndex: 50,
+      }}
+    >
+      {cta && (
+        <div style={{ maxWidth: LAYOUT.maxWidth, margin: "0 auto", padding: `${SPACE.md}px ${LAYOUT.screenMargin}px` }}>
+          <Btn onClick={cta.onClick} disabled={cta.disabled}>
+            {cta.label}
+          </Btn>
+        </div>
+      )}
+      <nav
+        style={{
+          background: T.card,
+          borderTop: `1px solid ${T.line}`,
+          display: "flex",
+          height: NAV_HEIGHT,
+          paddingBottom: SAFE_BOTTOM,
+        }}
+      >
+        {[
+          ["closet", "Closet"],
+          ["fits", "Fits"],
+          ["scan", "Scan"],
+          ["gaps", "Gaps"],
+          ["style", "Lookbook"],
+        ].map(([id, label]) => (
+          <button
+            key={id}
+            onClick={() => setTab(id)}
+            style={{
+              flex: 1,
+              minHeight: TOUCH.min,
+              background: "none",
+              border: "none",
+              borderTop: tab === id ? `2px solid ${T.tobacco}` : "2px solid transparent",
+              color: tab === id ? T.bone : T.faint,
+              fontFamily: mono,
+              ...TYPE.caption,
+              letterSpacing: "0.1em",
+              textTransform: "uppercase",
+              cursor: "pointer",
+            }}
+          >
+            {label}
+          </button>
+        ))}
+      </nav>
     </div>
   );
 }
 
 // ———— CLOSET ————
 
-function Closet({ pieces, removePiece, updatePiece, profile, flash, onBuildFit, busy, progress, bottomBarHeight }) {
+function Closet({ pieces, savePiece, removePiece, updatePiece, profile, flash, onBuildFit, setCta, bottomBarHeight, topBarHeight }) {
+  const fileRef = useRef();
+  const [busy, setBusy] = useState(false);
+  const [progress, setProgress] = useState(null); // {done, total}
   const [filter, setFilter] = useState("all");
   const [sheetPiece, setSheetPiece] = useState(null);
+  const [chipVisible, setChipVisible] = useState(true);
+
+  const handleFiles = async (e) => {
+    const files = Array.from(e.target.files || []);
+    e.target.value = "";
+    if (!files.length) return;
+    setBusy(true);
+    let added = 0;
+    for (let i = 0; i < files.length; i++) {
+      setProgress({ done: i, total: files.length });
+      try {
+        const image = await compressImage(files[i]);
+        const tags = await askClaude([
+          imgBlock(image),
+          {
+            type: "text",
+            text: `Catalog this clothing item. Respond ONLY with JSON, no markdown: {"name": "short specific name e.g. 'Espresso lug-sole loafer'", "category": one of ${JSON.stringify(CATEGORIES)}, "color": "primary color", "material": "best guess material", "vibe": "one short phrase on the aesthetic", "seasons": ["applicable seasons"]}`,
+          },
+        ]);
+        await savePiece({
+          id: "p" + Date.now() + "_" + i,
+          added: Date.now() + i,
+          image,
+          ...tags,
+        });
+        added++;
+      } catch (err) {}
+    }
+    setProgress(null);
+    setBusy(false);
+    flash(
+      added === files.length
+        ? `Added ${added} piece${added === 1 ? "" : "s"}`
+        : `Added ${added} of ${files.length} — retry the rest`
+    );
+  };
+
+  useEffect(() => {
+    setCta({
+      label: busy ? "Cataloguing…" : "+ Add pieces from photos",
+      onClick: () => fileRef.current?.click(),
+      disabled: busy,
+    });
+    return () => setCta(null);
+  }, [busy, setCta]);
+
+  // reveal the chip row on any upward scroll, hide it past a small downward threshold — the threshold keeps scroll jitter from flickering it
+  useEffect(() => {
+    let lastY = window.scrollY;
+    const THRESHOLD = 8;
+    const onScroll = () => {
+      const y = Math.max(0, window.scrollY);
+      if (y <= 0) {
+        setChipVisible(true);
+        lastY = y;
+        return;
+      }
+      const delta = y - lastY;
+      if (delta > THRESHOLD) {
+        setChipVisible(false);
+        lastY = y;
+      } else if (delta < -THRESHOLD) {
+        setChipVisible(true);
+        lastY = y;
+      }
+    };
+    window.addEventListener("scroll", onScroll, { passive: true });
+    return () => window.removeEventListener("scroll", onScroll);
+  }, []);
 
   const shown = filter === "all" ? pieces : pieces.filter((p) => p.category === filter);
 
   return (
     <div>
+      <input ref={fileRef} type="file" accept="image/*" multiple style={{ display: "none" }} onChange={handleFiles} />
       {busy && (
         <Thinking
           label={
@@ -908,36 +1378,47 @@ function Closet({ pieces, removePiece, updatePiece, profile, flash, onBuildFit, 
         />
       )}
 
+      <div style={{ ...TYPE.caption, fontFamily: mono, color: T.faint, margin: `${SPACE.xs}px 0` }}>
+        {pieces.length} piece{pieces.length === 1 ? "" : "s"} catalogued
+      </div>
+
       {pieces.length > 0 && (
-        <div style={{ display: "flex", gap: 6, margin: "4px 0 4px", overflowX: "auto", paddingBottom: 4 }}>
-          {["all", ...CATEGORIES].map((c) => (
-            <button
-              key={c}
-              onClick={() => setFilter(c)}
-              style={{
-                padding: "6px 12px",
-                borderRadius: 20,
-                border: `1px solid ${filter === c ? T.tobacco : T.line}`,
-                background: filter === c ? T.tobacco : "transparent",
-                color: filter === c ? T.bg : T.stone,
-                fontFamily: mono,
-                fontSize: 10,
-                letterSpacing: "0.1em",
-                textTransform: "uppercase",
-                whiteSpace: "nowrap",
-                cursor: "pointer",
-              }}
-            >
-              {c}
-            </button>
-          ))}
+        <div
+          style={{
+            position: "fixed",
+            top: topBarHeight,
+            left: 0,
+            right: 0,
+            zIndex: 45,
+            background: T.bg,
+            borderBottom: `1px solid ${T.line}`,
+            transform: `translateY(${chipVisible ? "0" : "-100%"})`,
+            transition: "transform 200ms ease",
+          }}
+        >
+          <div
+            style={{
+              maxWidth: LAYOUT.maxWidth,
+              margin: "0 auto",
+              padding: `${SPACE.xs}px ${LAYOUT.screenMargin}px`,
+              display: "flex",
+              gap: TOUCH.gap,
+              overflowX: "auto",
+            }}
+          >
+            {["all", ...CATEGORIES].map((c) => (
+              <button key={c} onClick={() => setFilter(c)} style={chipHitStyle}>
+                <span style={chipVisualStyle(filter === c)}>{c}</span>
+              </button>
+            ))}
+          </div>
         </div>
       )}
 
       {pieces.length === 0 && !busy ? (
-        <div style={{ padding: "48px 12px", textAlign: "center" }}>
-          <div style={{ fontFamily: serif, fontSize: 26, color: T.stone }}>The rack is empty.</div>
-          <div style={{ fontSize: 13, color: T.faint, marginTop: 8, lineHeight: 1.6 }}>
+        <div style={{ padding: `${SPACE.xxxxl}px ${SPACE.md}px`, textAlign: "center" }}>
+          <div style={{ fontFamily: serif, ...TYPE.title1, color: T.stone }}>The rack is empty.</div>
+          <div style={{ ...TYPE.subhead, color: T.faint, marginTop: SPACE.sm, lineHeight: 1.6 }}>
             Photograph a piece to start the index. Flat-lay or on-hanger shots work best.
           </div>
         </div>
@@ -946,8 +1427,8 @@ function Closet({ pieces, removePiece, updatePiece, profile, flash, onBuildFit, 
           style={{
             display: "grid",
             gridTemplateColumns: "1fr 1fr",
-            gap: 10,
-            marginTop: 12,
+            gap: SPACE.sm,
+            marginTop: SPACE.sm,
             paddingBottom: `${bottomBarHeight}px`,
           }}
         >
@@ -975,7 +1456,7 @@ function Closet({ pieces, removePiece, updatePiece, profile, flash, onBuildFit, 
 
 // ———— FITS ————
 
-function Fits({ pieces, profile, inspo, savedFits, saveFit, removeFit, flash, anchor, setAnchor }) {
+function Fits({ pieces, profile, inspo, savedFits, saveFit, removeFit, flash, anchor, setAnchor, setCta, bottomBarHeight }) {
   const [occasion, setOccasion] = useState("");
   const [busy, setBusy] = useState(false);
   const [fit, setFit] = useState(null);
@@ -1028,24 +1509,34 @@ function Fits({ pieces, profile, inspo, savedFits, saveFit, removeFit, flash, an
   const fitPieces = fit ? pieces.filter((p) => fit.piece_ids?.includes(p.id)) : [];
   const fitOptional = fit ? pieces.filter((p) => fit.optional_piece_ids?.includes(p.id)) : [];
 
+  const stableGenerate = useStableCallback(() => generate());
+  useEffect(() => {
+    setCta({
+      label: busy ? "Styling…" : "Generate fit",
+      onClick: stableGenerate,
+      disabled: busy,
+    });
+    return () => setCta(null);
+  }, [busy, stableGenerate, setCta]);
+
   return (
-    <div>
-      <div style={{ fontFamily: serif, fontSize: 26, marginBottom: 12 }}>Build a fit</div>
+    <div style={{ paddingBottom: bottomBarHeight }}>
+      <div style={{ fontFamily: serif, ...TYPE.title1, marginBottom: SPACE.md }}>Build a fit</div>
       {anchor && (
         <div style={{
-          display: "flex", alignItems: "center", gap: 10,
+          display: "flex", alignItems: "center", gap: SPACE.sm,
           background: T.cardUp, border: `1px solid ${T.tobacco}`,
-          borderRadius: 8, padding: "8px 10px", marginBottom: 10,
+          borderRadius: RADIUS.sm, padding: `${SPACE.sm}px ${SPACE.md - 2}px`, marginBottom: SPACE.sm,
           animation: "rise .3s ease",
         }}>
           {anchor.image && (
-            <img src={anchor.image} alt={anchor.name} style={{ width: 36, height: 36, objectFit: "cover", borderRadius: 4, flexShrink: 0 }} />
+            <img src={anchor.image} alt={anchor.name} style={{ width: 36, height: 36, objectFit: "cover", borderRadius: RADIUS.sm / 2, flexShrink: 0 }} />
           )}
           <div style={{ flex: 1, overflow: "hidden" }}>
-            <div style={{ fontFamily: mono, fontSize: 8, letterSpacing: "0.2em", color: T.tobacco, textTransform: "uppercase" }}>Built around</div>
-            <div style={{ fontSize: 13, color: T.bone, marginTop: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{anchor.name}</div>
+            <div style={labelType(T.tobacco, "0.2em")}>Built around</div>
+            <div style={{ ...TYPE.footnote, color: T.bone, marginTop: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{anchor.name}</div>
           </div>
-          <button onClick={() => setAnchor(null)} style={{ border: "none", background: "none", color: T.faint, fontSize: 18, cursor: "pointer", padding: 4, lineHeight: 1 }}>×</button>
+          <button onClick={() => setAnchor(null)} aria-label="Remove anchor" style={{ minWidth: TOUCH.min, minHeight: TOUCH.min, border: "none", background: "none", color: T.faint, ...TYPE.title3, cursor: "pointer", padding: 4, lineHeight: 1 }}>×</button>
         </div>
       )}
       <input
@@ -1054,66 +1545,64 @@ function Fits({ pieces, profile, inspo, savedFits, saveFit, removeFit, flash, an
         placeholder="Occasion — date night, gym-to-brunch, content shoot…"
         style={{
           width: "100%",
-          padding: "14px",
-          borderRadius: 8,
+          minHeight: TOUCH.min,
+          padding: `0 ${SPACE.md + 2}px`,
+          borderRadius: RADIUS.sm,
           border: `1px solid ${T.line}`,
           background: T.card,
           color: T.bone,
-          fontSize: 14,
-          marginBottom: 10,
+          ...TYPE.subhead,
+          marginBottom: SPACE.sm,
           fontFamily: sans,
         }}
       />
-      <Btn onClick={generate} disabled={busy}>
-        {busy ? "Styling…" : "Generate fit"}
-      </Btn>
       {busy && <Thinking label="Pulling from the rack…" />}
 
       {fit && (
-        <div style={{ marginTop: 20, animation: "rise .3s ease" }}>
-          <div style={{ fontFamily: mono, fontSize: 10, letterSpacing: "0.2em", color: T.tobacco }}>THE FIT</div>
-          <div style={{ fontFamily: serif, fontSize: 30, margin: "4px 0 14px" }}>{fit.title}</div>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+        <div style={{ marginTop: SPACE.lg, animation: "rise .3s ease" }}>
+          <div style={labelType(T.tobacco, "0.2em")}>THE FIT</div>
+          <div style={{ fontFamily: serif, ...TYPE.title1, margin: `${SPACE.xs}px 0 ${SPACE.md}px` }}>{fit.title}</div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: SPACE.sm }}>
             {fitPieces.map((p) => (
               <GarmentTag key={p.id} piece={p} />
             ))}
           </div>
           {fitOptional.length > 0 && (
-            <div style={{ marginTop: 14 }}>
-              <div style={{ fontFamily: mono, fontSize: 9, letterSpacing: "0.18em", color: T.faint, marginBottom: 8 }}>
+            <div style={{ marginTop: SPACE.md }}>
+              <div style={{ ...labelType(T.faint, "0.18em"), marginBottom: SPACE.sm }}>
                 OPTIONAL FINISH
               </div>
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: SPACE.sm }}>
                 {fitOptional.map((p) => (
                   <GarmentTag key={p.id} piece={p} dim />
                 ))}
               </div>
-              <div style={{ fontFamily: mono, fontSize: 10, color: T.faint, marginTop: 6 }}>
+              <div style={{ ...TYPE.caption, fontFamily: mono, color: T.faint, marginTop: SPACE.xs }}>
                 Add if it fits the vibe — not essential.
               </div>
             </div>
           )}
-          <p style={{ fontSize: 14, lineHeight: 1.65, color: T.stone, marginTop: 16 }}>{fit.why}</p>
+          <p style={{ ...TYPE.subhead, lineHeight: 1.65, color: T.stone, marginTop: SPACE.md }}>{fit.why}</p>
           {fit.missing && (
             <div
               style={{
-                marginTop: 12,
-                padding: "12px 14px",
+                marginTop: SPACE.md,
+                padding: `${SPACE.md}px ${SPACE.md + 2}px`,
                 border: `1px dashed ${T.olive}`,
-                borderRadius: 8,
-                fontSize: 13,
+                borderRadius: RADIUS.sm,
+                ...TYPE.footnote,
                 color: T.stone,
                 lineHeight: 1.5,
               }}
             >
-              <span style={{ fontFamily: mono, fontSize: 10, letterSpacing: "0.15em", color: T.olive }}>
+              <span style={labelType(T.olive, "0.15em")}>
                 WORTH HUNTING:{" "}
               </span>
               {fit.missing}
             </div>
           )}
 
-          <div style={{ marginTop: 14 }}>
+          <div style={{ marginTop: SPACE.md }}>
             <Btn
               ghost
               disabled={stashed}
@@ -1131,9 +1620,9 @@ function Fits({ pieces, profile, inspo, savedFits, saveFit, removeFit, flash, an
 
       {savedFits.length > 0 && (
         <>
-          <div style={{ height: 1, background: T.line, margin: "28px 0 20px" }} />
-          <div style={{ fontFamily: serif, fontSize: 26, marginBottom: 4 }}>Lookbook</div>
-          <p style={{ fontSize: 13, color: T.faint, margin: "0 0 14px", lineHeight: 1.6 }}>
+          <div style={{ height: 1, background: T.line, margin: `${SPACE.xxl}px 0 ${SPACE.lg}px` }} />
+          <div style={{ fontFamily: serif, ...TYPE.title1, marginBottom: SPACE.xs }}>Lookbook</div>
+          <p style={{ ...TYPE.footnote, color: T.faint, margin: `0 0 ${SPACE.md}px`, lineHeight: 1.6 }}>
             {savedFits.length} fit{savedFits.length === 1 ? "" : "s"} on file. Tap a piece row to see what's in it.
           </p>
           {savedFits.map((f) => {
@@ -1145,16 +1634,16 @@ function Fits({ pieces, profile, inspo, savedFits, saveFit, removeFit, flash, an
                 style={{
                   background: T.card,
                   border: `1px solid ${T.line}`,
-                  borderRadius: 10,
-                  padding: "14px 14px 16px",
-                  marginBottom: 10,
+                  borderRadius: RADIUS.md,
+                  padding: `${SPACE.md}px ${SPACE.md}px ${SPACE.md + 2}px`,
+                  marginBottom: SPACE.sm,
                   animation: "rise .3s ease",
                 }}
               >
-                <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 10 }}>
+                <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: SPACE.sm }}>
                   <div>
-                    <div style={{ fontFamily: serif, fontSize: 21, lineHeight: 1.2 }}>{f.title}</div>
-                    <div style={{ fontFamily: mono, fontSize: 10, letterSpacing: "0.14em", color: T.tobacco, marginTop: 4, textTransform: "uppercase" }}>
+                    <div style={{ fontFamily: serif, ...TYPE.title2, lineHeight: 1.2 }}>{f.title}</div>
+                    <div style={{ ...labelType(T.tobacco, "0.14em"), marginTop: SPACE.xs }}>
                       {f.occasion}
                     </div>
                   </div>
@@ -1162,20 +1651,21 @@ function Fits({ pieces, profile, inspo, savedFits, saveFit, removeFit, flash, an
                     onClick={() => removeFit(f.id)}
                     aria-label={"Remove " + f.title}
                     style={{
+                      minWidth: TOUCH.min,
+                      minHeight: TOUCH.min,
                       border: "none",
                       background: "none",
                       color: T.faint,
                       fontSize: 16,
                       cursor: "pointer",
                       lineHeight: 1,
-                      padding: 2,
                     }}
                   >
                     ×
                   </button>
                 </div>
                 {fp.length > 0 && (
-                  <div style={{ display: "flex", gap: 6, marginTop: 12, overflowX: "auto", paddingBottom: 2 }}>
+                  <div style={{ display: "flex", gap: TOUCH.gap, marginTop: SPACE.md, overflowX: "auto", paddingBottom: 2 }}>
                     {fp.map((p) => (
                       <img
                         key={p.id}
@@ -1186,7 +1676,7 @@ function Fits({ pieces, profile, inspo, savedFits, saveFit, removeFit, flash, an
                           width: 60,
                           height: 60,
                           objectFit: "cover",
-                          borderRadius: 6,
+                          borderRadius: RADIUS.sm - 2,
                           border: `1px solid ${T.line}`,
                           flexShrink: 0,
                         }}
@@ -1202,7 +1692,7 @@ function Fits({ pieces, profile, inspo, savedFits, saveFit, removeFit, flash, an
                           width: 60,
                           height: 60,
                           objectFit: "cover",
-                          borderRadius: 6,
+                          borderRadius: RADIUS.sm - 2,
                           border: `1px dashed ${T.faint}`,
                           flexShrink: 0,
                           opacity: 0.55,
@@ -1222,7 +1712,7 @@ function Fits({ pieces, profile, inspo, savedFits, saveFit, removeFit, flash, an
 
 // ———— SCAN ————
 
-function Scan({ pieces, profile, flash, saveWant }) {
+function Scan({ pieces, profile, flash, saveWant, setCta, bottomBarHeight }) {
   const fileRef = useRef();
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState(null);
@@ -1275,61 +1765,67 @@ function Scan({ pieces, profile, flash, saveWant }) {
   const verdictColor = result?.verdict === "cop" ? T.olive : result?.verdict === "skip" ? T.bad : T.tobacco;
   const pairs = result ? pieces.filter((p) => result.pairs_with?.includes(p.id)) : [];
 
+  useEffect(() => {
+    setCta({
+      label: busy ? "Judging…" : "Scan an item",
+      onClick: () => fileRef.current?.click(),
+      disabled: busy,
+    });
+    return () => setCta(null);
+  }, [busy, setCta]);
+
   return (
-    <div>
-      <div style={{ fontFamily: serif, fontSize: 26, marginBottom: 6 }}>Cop or skip?</div>
-      <p style={{ fontSize: 13, color: T.faint, margin: "0 0 14px", lineHeight: 1.6 }}>
+    <div style={{ paddingBottom: bottomBarHeight }}>
+      <div style={{ fontFamily: serif, ...TYPE.title1, marginBottom: SPACE.sm }}>Cop or skip?</div>
+      <p style={{ ...TYPE.footnote, color: T.faint, margin: `0 0 ${SPACE.md}px`, lineHeight: 1.6 }}>
         See something in a store or online? Snap it and get a verdict against your actual closet.
       </p>
       <input ref={fileRef} type="file" accept="image/*" style={{ display: "none" }} onChange={handleFile} />
-      <Btn onClick={() => fileRef.current.click()} disabled={busy}>
-        {busy ? "Judging…" : "Scan an item"}
-      </Btn>
       {busy && <Thinking label="Checking it against the archive…" />}
 
       {result && (
-        <div style={{ marginTop: 20, animation: "rise .3s ease" }}>
+        <div style={{ marginTop: SPACE.lg, animation: "rise .3s ease" }}>
           {scanImg && (
             <img
               src={scanImg}
               alt="Scanned item"
-              style={{ width: "100%", borderRadius: 10, border: `1px solid ${T.line}`, marginBottom: 14 }}
+              style={{ width: "100%", borderRadius: RADIUS.md, border: `1px solid ${T.line}`, marginBottom: SPACE.md }}
             />
           )}
-          <div style={{ display: "flex", alignItems: "baseline", gap: 12 }}>
-            <div style={{ fontFamily: serif, fontSize: 40, color: verdictColor, textTransform: "capitalize" }}>
+          <div style={{ display: "flex", alignItems: "baseline", gap: SPACE.sm }}>
+            <div style={{ fontFamily: serif, ...TYPE.largeTitle, color: verdictColor, textTransform: "capitalize" }}>
               {result.verdict}
             </div>
-            <div style={{ fontFamily: mono, fontSize: 12, color: T.faint }}>{result.score}/10 closet fit</div>
+            <div style={{ ...TYPE.caption, fontFamily: mono, color: T.faint }}>{result.score}/10 closet fit</div>
           </div>
           {result.item && (
-            <div style={{ fontFamily: serif, fontSize: 18, color: T.bone, marginTop: 4, lineHeight: 1.3 }}>
+            <div style={{ fontFamily: serif, ...TYPE.headline, color: T.bone, marginTop: SPACE.xs, lineHeight: 1.3 }}>
               {result.item}
               {result.price && (
-                <span style={{ fontFamily: mono, fontSize: 12, color: T.faint, marginLeft: 10 }}>{result.price}</span>
+                <span style={{ ...TYPE.caption, fontFamily: mono, color: T.faint, marginLeft: SPACE.sm }}>{result.price}</span>
               )}
             </div>
           )}
-          <p style={{ fontSize: 14, lineHeight: 1.65, color: T.stone, marginTop: 8 }}>{result.take}</p>
+          <p style={{ ...TYPE.subhead, lineHeight: 1.65, color: T.stone, marginTop: SPACE.sm }}>{result.take}</p>
           {logged && (
             <div style={{
-              display: "flex", alignItems: "center", gap: 8,
-              padding: "10px 12px", borderRadius: 8,
+              display: "flex", alignItems: "center", gap: TOUCH.gap,
+              padding: `${SPACE.sm + 2}px ${SPACE.md}px`, borderRadius: RADIUS.sm,
               border: `1px solid ${T.olive}`, background: "rgba(122,122,82,0.12)",
-              marginTop: 8, animation: "rise .3s ease",
+              marginTop: SPACE.sm, animation: "rise .3s ease",
             }}>
-              <span style={{ color: T.olive, fontSize: 15 }}>✓</span>
-              <span style={{ fontFamily: mono, fontSize: 11, color: T.olive, letterSpacing: "0.05em" }}>
+              <span style={{ color: T.olive, ...TYPE.subhead }}>✓</span>
+              <span style={{ ...TYPE.caption, fontFamily: mono, color: T.olive, letterSpacing: "0.05em" }}>
                 Filed in What’s missing with the photo.
               </span>
             </div>
           )}
           {pairs.length > 0 && (
             <>
-              <div style={{ fontFamily: mono, fontSize: 10, letterSpacing: "0.2em", color: T.tobacco, margin: "16px 0 8px" }}>
+              <div style={{ ...labelType(T.tobacco, "0.2em"), margin: `${SPACE.md}px 0 ${SPACE.sm}px` }}>
                 PAIRS WITH
               </div>
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8 }}>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: TOUCH.gap }}>
                 {pairs.map((p) => (
                   <GarmentTag key={p.id} piece={p} />
                 ))}
@@ -1344,7 +1840,7 @@ function Scan({ pieces, profile, flash, saveWant }) {
 
 // ———— GAPS ————
 
-function Gaps({ pieces, profile, inspo, gaps, saveGaps, toggleGapOwned, wants, removeWant, toggleWantOwned, flash }) {
+function Gaps({ pieces, profile, inspo, gaps, saveGaps, toggleGapOwned, wants, removeWant, toggleWantOwned, flash, setCta, bottomBarHeight }) {
   const [busy, setBusy] = useState(false);
   const [expandedIdx, setExpandedIdx] = useState(null);
 
@@ -1386,24 +1882,34 @@ function Gaps({ pieces, profile, inspo, gaps, saveGaps, toggleGapOwned, wants, r
 
   const bought = gaps ? gaps.items.filter((i) => i.owned).length : 0;
 
+  const stableAnalyze = useStableCallback(analyze);
+  useEffect(() => {
+    setCta({
+      label: busy ? "Analysing…" : gaps ? "Re-run analysis" : "Find my gaps",
+      onClick: stableAnalyze,
+      disabled: busy,
+    });
+    return () => setCta(null);
+  }, [busy, gaps, stableAnalyze, setCta]);
+
   return (
-    <div>
-      <div style={{ fontFamily: serif, fontSize: 26, marginBottom: 6 }}>What's missing</div>
-      <p style={{ fontSize: 13, color: T.faint, margin: "0 0 16px", lineHeight: 1.6 }}>
+    <div style={{ paddingBottom: bottomBarHeight }}>
+      <div style={{ fontFamily: serif, ...TYPE.title1, marginBottom: SPACE.sm }}>What's missing</div>
+      <p style={{ ...TYPE.footnote, color: T.faint, margin: `0 0 ${SPACE.lg}px`, lineHeight: 1.6 }}>
         The distance between the closet you have and the one your inspo board describes — ranked by what unlocks the most
         outfits.
       </p>
 
       {/* ——— SPOTTED IN THE WILD ——— */}
       {wants.length > 0 && (
-        <div style={{ marginBottom: 28 }}>
-          <div style={{ display: "flex", alignItems: "baseline", gap: 10, marginBottom: 8 }}>
-            <div style={{ fontFamily: mono, fontSize: 10, letterSpacing: "0.2em", color: T.tobacco }}>SPOTTED IN THE WILD</div>
-            <div style={{ fontFamily: mono, fontSize: 10, color: T.faint }}>
+        <div style={{ marginBottom: SPACE.xxl }}>
+          <div style={{ display: "flex", alignItems: "baseline", gap: SPACE.sm, marginBottom: SPACE.sm }}>
+            <div style={labelType(T.tobacco, "0.2em")}>SPOTTED IN THE WILD</div>
+            <div style={{ ...TYPE.caption, fontFamily: mono, color: T.faint }}>
               {wants.filter((w) => w.owned).length}/{wants.length} bought
             </div>
           </div>
-          <p style={{ fontSize: 12, color: T.faint, margin: "0 0 12px", lineHeight: 1.5 }}>
+          <p style={{ ...TYPE.caption, color: T.faint, margin: `0 0 ${SPACE.md}px`, lineHeight: 1.5 }}>
             Everything you scanned and got a cop on. Tap to mark as bought.
           </p>
           {wants.map((w) => (
@@ -1413,53 +1919,60 @@ function Gaps({ pieces, profile, inspo, gaps, saveGaps, toggleGapOwned, wants, r
               style={{
                 position: "relative",
                 display: "flex",
-                gap: 12,
+                gap: SPACE.md,
                 background: T.card,
                 border: `1px solid ${w.owned ? T.olive : T.line}`,
-                borderRadius: 10,
-                padding: "10px 12px",
-                marginBottom: 8,
+                borderRadius: RADIUS.md,
+                padding: `${SPACE.sm + 2}px ${SPACE.md}px`,
+                marginBottom: SPACE.sm,
                 opacity: w.owned ? 0.6 : 1,
                 cursor: "pointer",
               }}
             >
-              <div style={{ position: "relative", width: 66, height: 66, flexShrink: 0, borderRadius: 6, overflow: "hidden", background: T.cardUp }}>
+              <div style={{ position: "relative", width: 66, height: 66, flexShrink: 0, borderRadius: RADIUS.sm - 2, overflow: "hidden", background: T.cardUp }}>
                 {w.image && <img src={w.image} alt={w.item} style={{ width: "100%", height: "100%", objectFit: "cover" }} />}
                 {w.owned && (
                   <div style={{
                     position: "absolute", inset: 0,
                     background: "rgba(122,122,82,0.65)",
                     display: "flex", alignItems: "center", justifyContent: "center",
-                    fontSize: 28, color: "#fff",
+                    ...TYPE.title1, color: "#fff",
                   }}>✓</div>
                 )}
               </div>
               <div style={{ flex: 1, overflow: "hidden", paddingRight: 18 }}>
                 <div style={{
-                  fontSize: 15, color: T.bone, marginBottom: 3, lineHeight: 1.3,
+                  ...TYPE.subhead, color: T.bone, marginBottom: 3, lineHeight: 1.3,
                   textDecoration: w.owned ? "line-through" : "none",
                 }}>{w.item}</div>
                 <div style={{
-                  fontSize: 12, color: T.stone, lineHeight: 1.5,
+                  ...TYPE.caption, color: T.stone, lineHeight: 1.5,
                   display: "-webkit-box",
                   WebkitLineClamp: 2,
                   WebkitBoxOrient: "vertical",
                   overflow: "hidden",
                 }}>{w.reason}</div>
-                <div style={{ fontFamily: mono, fontSize: 10, color: T.faint, marginTop: 5 }}>
+                <div style={{ ...TYPE.caption, fontFamily: mono, color: T.faint, marginTop: 5 }}>
                   {w.score}/10{w.price ? " · " + w.price : ""}
                 </div>
               </div>
               <button
                 onClick={(e) => { e.stopPropagation(); removeWant(w.id); }}
+                aria-label={"Remove " + w.item}
                 style={{
-                  position: "absolute", top: 8, right: 8,
-                  width: 22, height: 22, borderRadius: 11,
-                  border: "none", background: "rgba(27,24,21,.7)",
-                  color: T.faint, fontSize: 13, cursor: "pointer",
-                  lineHeight: 1, padding: 0,
+                  position: "absolute", top: 0, right: 0,
+                  width: TOUCH.min, height: TOUCH.min,
+                  display: "flex", alignItems: "center", justifyContent: "center",
+                  border: "none", background: "none",
+                  color: T.faint, cursor: "pointer", padding: 0,
                 }}
-              >×</button>
+              >
+                <span style={{
+                  width: 22, height: 22, borderRadius: RADIUS.pill,
+                  display: "flex", alignItems: "center", justifyContent: "center",
+                  background: "rgba(27,24,21,.7)", fontSize: 13, lineHeight: 1,
+                }}>×</span>
+              </button>
             </div>
           ))}
         </div>
@@ -1467,11 +1980,11 @@ function Gaps({ pieces, profile, inspo, gaps, saveGaps, toggleGapOwned, wants, r
 
       {gaps && (
         <div style={{ animation: "rise .3s ease" }}>
-          <p style={{ fontSize: 14, lineHeight: 1.65, color: T.stone, margin: "0 0 18px" }}>{gaps.verdict}</p>
+          <p style={{ ...TYPE.subhead, lineHeight: 1.65, color: T.stone, margin: `0 0 ${SPACE.lg + 2}px` }}>{gaps.verdict}</p>
 
-          <div style={{ display: "flex", alignItems: "baseline", gap: 10, marginBottom: 10 }}>
-            <div style={{ fontFamily: mono, fontSize: 10, letterSpacing: "0.2em", color: T.tobacco }}>GAPS IN THE ARCHIVE</div>
-            <div style={{ fontFamily: mono, fontSize: 10, color: T.faint }}>
+          <div style={{ display: "flex", alignItems: "baseline", gap: SPACE.sm, marginBottom: SPACE.sm }}>
+            <div style={labelType(T.tobacco, "0.2em")}>GAPS IN THE ARCHIVE</div>
+            <div style={{ ...TYPE.caption, fontFamily: mono, color: T.faint }}>
               {bought}/{gaps.items.length} acquired
             </div>
           </div>
@@ -1484,8 +1997,8 @@ function Gaps({ pieces, profile, inspo, gaps, saveGaps, toggleGapOwned, wants, r
                 style={{
                   background: T.card,
                   border: `1px solid ${it.owned ? T.olive : T.line}`,
-                  borderRadius: 10,
-                  marginBottom: 8,
+                  borderRadius: RADIUS.md,
+                  marginBottom: SPACE.sm,
                   opacity: it.owned ? 0.6 : 1,
                   overflow: "hidden",
                 }}
@@ -1496,34 +2009,52 @@ function Gaps({ pieces, profile, inspo, gaps, saveGaps, toggleGapOwned, wants, r
                   style={{
                     display: "flex",
                     alignItems: "center",
-                    gap: 12,
-                    padding: "13px 14px",
+                    gap: SPACE.md,
+                    minHeight: TOUCH.min,
+                    padding: `0 ${SPACE.md + 2}px`,
                     cursor: "pointer",
                     fontFamily: sans,
                   }}
                 >
-                  <div
+                  <button
                     onClick={(e) => { e.stopPropagation(); toggleGapOwned(i); }}
+                    aria-label={it.owned ? "Mark as not acquired" : "Mark as acquired"}
                     style={{
-                      width: 20,
-                      height: 20,
-                      borderRadius: 4,
+                      width: TOUCH.min,
+                      height: TOUCH.min,
+                      marginLeft: -SPACE.md,
                       flexShrink: 0,
-                      border: `1px solid ${it.owned ? T.olive : T.faint}`,
-                      background: it.owned ? T.olive : "transparent",
-                      color: T.bg,
-                      fontSize: 13,
-                      lineHeight: "19px",
-                      textAlign: "center",
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      border: "none",
+                      background: "none",
+                      padding: 0,
                       cursor: "pointer",
                     }}
                   >
-                    {it.owned ? "✓" : ""}
-                  </div>
+                    <span
+                      style={{
+                        width: 20,
+                        height: 20,
+                        borderRadius: RADIUS.sm / 2,
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        border: `1px solid ${it.owned ? T.olive : T.faint}`,
+                        background: it.owned ? T.olive : "transparent",
+                        color: T.bg,
+                        fontSize: 13,
+                        lineHeight: 1,
+                      }}
+                    >
+                      {it.owned ? "✓" : ""}
+                    </span>
+                  </button>
                   <div
                     style={{
                       flex: 1,
-                      fontSize: 15,
+                      ...TYPE.subhead,
                       color: T.bone,
                       textDecoration: it.owned ? "line-through" : "none",
                       lineHeight: 1.3,
@@ -1531,7 +2062,7 @@ function Gaps({ pieces, profile, inspo, gaps, saveGaps, toggleGapOwned, wants, r
                   >
                     {it.item}
                   </div>
-                  <div style={{ fontFamily: mono, fontSize: 14, color: T.faint, lineHeight: 1 }}>
+                  <div style={{ ...TYPE.subhead, fontFamily: mono, color: T.faint, lineHeight: 1 }}>
                     {open ? "−" : "+"}
                   </div>
                 </div>
@@ -1540,16 +2071,16 @@ function Gaps({ pieces, profile, inspo, gaps, saveGaps, toggleGapOwned, wants, r
                 {open && (
                   <div
                     style={{
-                      padding: "0 14px 14px",
-                      paddingLeft: 14 + 20 + 12,
+                      padding: `0 ${SPACE.md + 2}px ${SPACE.md + 2}px`,
+                      paddingLeft: SPACE.md + 2 + TOUCH.min,
                       borderTop: `1px solid ${T.line}`,
-                      paddingTop: 12,
+                      paddingTop: SPACE.md,
                       animation: "rise .2s ease",
                     }}
                   >
-                    <div style={{ fontSize: 13, color: T.stone, lineHeight: 1.55 }}>{it.why}</div>
+                    <div style={{ ...TYPE.footnote, color: T.stone, lineHeight: 1.55 }}>{it.why}</div>
                     {it.price && (
-                      <div style={{ fontFamily: mono, fontSize: 11, color: T.tobacco, marginTop: 8 }}>
+                      <div style={{ ...labelType(T.tobacco, "0.05em"), textTransform: "none", marginTop: SPACE.sm }}>
                         {it.price}
                       </div>
                     )}
@@ -1562,16 +2093,16 @@ function Gaps({ pieces, profile, inspo, gaps, saveGaps, toggleGapOwned, wants, r
           {gaps.stop_buying && (
             <div
               style={{
-                marginTop: 14,
-                padding: "12px 14px",
+                marginTop: SPACE.md,
+                padding: `${SPACE.md}px ${SPACE.md + 2}px`,
                 border: `1px dashed ${T.bad}`,
-                borderRadius: 8,
-                fontSize: 13,
+                borderRadius: RADIUS.sm,
+                ...TYPE.footnote,
                 color: T.stone,
                 lineHeight: 1.5,
               }}
             >
-              <span style={{ fontFamily: mono, fontSize: 10, letterSpacing: "0.15em", color: T.bad }}>ENOUGH OF: </span>
+              <span style={labelType(T.bad, "0.15em")}>ENOUGH OF: </span>
               {gaps.stop_buying}
             </div>
           )}
@@ -1579,16 +2110,11 @@ function Gaps({ pieces, profile, inspo, gaps, saveGaps, toggleGapOwned, wants, r
       )}
 
       {stale && !busy && (
-        <div style={{ fontFamily: mono, fontSize: 11, color: T.tobacco, margin: "16px 0 10px", animation: "rise .3s ease" }}>
+        <div style={{ ...TYPE.caption, fontFamily: mono, color: T.tobacco, margin: `${SPACE.md}px 0 ${SPACE.sm + 2}px`, animation: "rise .3s ease" }}>
           Your closet or inspo changed since this analysis.
         </div>
       )}
 
-      <div style={{ marginTop: gaps ? 16 : 0 }}>
-        <Btn onClick={analyze} disabled={busy}>
-          {busy ? "Analysing…" : gaps ? "Re-run analysis" : "Find my gaps"}
-        </Btn>
-      </div>
       {busy && <Thinking label="Measuring closet against inspo…" />}
     </div>
   );
@@ -1596,75 +2122,18 @@ function Gaps({ pieces, profile, inspo, gaps, saveGaps, toggleGapOwned, wants, r
 
 // ———— STYLE PROFILE ————
 
-function Profile({ profile, saveProfile, inspo, saveInspo, removeInspo, assessment, saveAssessment, pieces, flash, myOutfits, saveMyOutfit, removeMyOutfit, updateMyOutfit }) {
-  const [subTab, setSubTab] = useState("assessment");
-  const [draft, setDraft] = useState(profile);
+function Lookbook({ inspo, saveInspo, removeInspo, assessment, pieces, flash, myOutfits, saveMyOutfit, removeMyOutfit, updateMyOutfit, setCta, bottomBarHeight }) {
+  const [subTab, setSubTab] = useState("inspo");
   const [selectedInspo, setSelectedInspo] = useState(null);
   const inspoRef = useRef();
   const [inspoBusy, setInspoBusy] = useState(false);
   const [inspoProgress, setInspoProgress] = useState(null);
-  const [assessBusy, setAssessBusy] = useState(false);
-
-  useEffect(() => setDraft(profile), [profile]);
+  const [showAddOutfit, setShowAddOutfit] = useState(false);
 
   // deselect if the chosen image was removed
   useEffect(() => {
     if (selectedInspo && !inspo.some((i) => i.id === selectedInspo.id)) setSelectedInspo(null);
   }, [inspo, selectedInspo]);
-
-  const fp = draft.trim() + "|" + inspo.map((i) => i.id).join(",") + "|" + myOutfits.map((o) => o.id).join(",");
-  const stale = assessment && assessment.fp !== fp;
-  const unsaved = draft !== profile;
-
-  const runAssessment = async () => {
-    setAssessBusy(true);
-    try {
-      saveProfile(draft);
-      const inspoNotes = inspo.length
-        ? `\n\nInspo board vibes:\n${inspo.map((i) => "- " + i.vibe).join("\n")}`
-        : "\n\n(No inspo images yet.)";
-      const closetNotes = pieces.length
-        ? `\n\nCurrent closet:\n${closetSummary(pieces)}`
-        : "";
-      // cap sample so the payload stays reasonable
-      const outfitSample = myOutfits.slice(0, 8);
-      const outfitImageBlocks = [];
-      const outfitLines = [];
-      for (const o of outfitSample) {
-        const firstId = o.imageIds?.[0];
-        if (firstId) {
-          try {
-            const dataUrl = await loadImage(firstId);
-            if (dataUrl) outfitImageBlocks.push(imgBlock(dataUrl));
-          } catch (e) {}
-        }
-        const wornNames = (o.pieceIds || [])
-          .map((id) => pieces.find((p) => p.id === id)?.name)
-          .filter(Boolean);
-        outfitLines.push(
-          `- ${o.dateWorn}${o.occasion ? " · " + o.occasion : ""}${wornNames.length ? " · " + wornNames.join(", ") : ""}${o.note ? " · " + o.note : ""}`
-        );
-      }
-      const outfitNotes = myOutfits.length
-        ? `\n\nSelf-outfit photos logged (${myOutfits.length} total):\n${outfitLines.join("\n")}`
-        : "\n\n(No self-outfit photos logged yet.)";
-      const result = await askClaude(
-        [
-          ...outfitImageBlocks,
-          {
-            type: "text",
-            text: `You are a sharp menswear stylist doing a style assessment. The client describes their style as: "${draft}"${inspoNotes}${closetNotes}${outfitNotes}${outfitImageBlocks.length ? "\n\n(Photos above are outfits they've actually worn.)" : ""}\n\nThey likely run more than one style lane at once — don't force everything into a single identity. Identify 2 to 4 DISTINCT style profiles across their stated style, inspo, closet, and outfit photos, ranked primary through quaternary by dominance. If they genuinely only run one coherent lane, return just that 1 profile rather than padding to reach a minimum. Judge every profile only against its own internal logic. Hard rules: never describe a profile as undermining, interrupting, or in tension with another; never use the phrase "blind spot"; never collapse multiple lanes into a single hybrid label to make the read tidier.\n\nFor each profile, give a 2-4 word headline, a 3-4 sentence read of what that lane actually looks like on its own terms (fit, palette, texture, occasion), 4 short pillar phrases, a "direction" (a short phrase for where the inspo board suggests this lane is heading, or "stable" if there's no signal), and an "activity" status — "active" if this lane shows up in the outfit photos, "dormant" if the closet supports it but it hasn't been worn. Then list shared_pieces: closet items that serve more than one profile, each tagged with which profile ranks they serve — frame these as the connective tissue holding the closet together, not as evidence of confusion.\n\nRespond ONLY with JSON, no markdown: {"profiles": [{"rank": "primary" | "secondary" | "tertiary" | "quaternary", "headline": "...", "read": "...", "pillars": ["...", "...", "...", "..."], "direction": "...", "activity": "active" | "dormant"}], "shared_pieces": [{"item": "short piece name", "profiles": ["primary", "secondary"]}]}`,
-          },
-        ],
-        2000
-      );
-      await saveAssessment({ profiles: result.profiles, shared_pieces: result.shared_pieces || [], fp, at: Date.now() });
-      flash("Assessment updated");
-    } catch (e) {
-      flash("Assessment failed — try again");
-    }
-    setAssessBusy(false);
-  };
 
   const handleInspoFiles = async (e) => {
     const files = Array.from(e.target.files || []);
@@ -1698,38 +2167,59 @@ function Profile({ profile, saveProfile, inspo, saveInspo, removeInspo, assessme
   };
 
   const TABS = [
-    ["assessment", "Style Assessment"],
     ["inspo", inspo.length ? `Add inspiration  ${inspo.length}` : "Add inspiration"],
-    ["profile", "My Style"],
+    ["myoutfits", "My Style"],
   ];
 
+  // one effect (not one per sub-tab) so switching sub-tabs always clears the previous descriptor before setting the next
+  useEffect(() => {
+    if (subTab === "inspo") {
+      setCta({
+        label: inspoBusy ? "Reading the vibe…" : "+ Add inspo images",
+        onClick: () => inspoRef.current?.click(),
+        disabled: inspoBusy,
+      });
+    } else {
+      setCta({
+        label: "+ Add outfit",
+        onClick: () => setShowAddOutfit(true),
+        disabled: false,
+      });
+    }
+    return () => setCta(null);
+  }, [subTab, inspoBusy, setCta]);
+
   return (
-    <div>
-      {/* ── Segmented control ── */}
+    <div style={{ paddingBottom: bottomBarHeight }}>
+      {/* ── Sub-tabs: full-bleed, lighter than the primary bottom nav (no fill, hairline instead of a panel) ── */}
       <div
         style={{
           display: "flex",
-          background: T.card,
-          borderRadius: 8,
-          border: `1px solid ${T.line}`,
-          marginBottom: 20,
-          overflow: "hidden",
+          width: "100vw",
+          position: "relative",
+          left: "50%",
+          marginLeft: "-50vw",
+          borderBottom: `1px solid ${T.line}`,
+          marginBottom: SPACE.xl,
         }}
       >
-        {TABS.map(([id, label], idx) => (
+        {TABS.map(([id, label]) => (
           <button
             key={id}
             onClick={() => setSubTab(id)}
             style={{
               flex: 1,
-              padding: "10px 3px",
+              minHeight: TOUCH.min,
+              marginBottom: -1,
+              padding: `0 ${SPACE.xs}px`,
               border: "none",
-              borderRight: idx < TABS.length - 1 ? `1px solid ${T.line}` : "none",
-              background: subTab === id ? T.cardUp : "transparent",
+              borderBottom: subTab === id ? `2px solid ${T.tobacco}` : "2px solid transparent",
+              background: "none",
               color: subTab === id ? T.bone : T.faint,
               fontFamily: mono,
-              fontSize: 9,
-              letterSpacing: "0.03em",
+              ...TYPE.caption,
+              letterSpacing: "0.05em",
+              textTransform: "uppercase",
               cursor: "pointer",
               whiteSpace: "nowrap",
               overflow: "hidden",
@@ -1741,127 +2231,10 @@ function Profile({ profile, saveProfile, inspo, saveInspo, removeInspo, assessme
         ))}
       </div>
 
-      {/* ── Style Assessment ── */}
-      {subTab === "assessment" && (
-        <div>
-          <p style={{ fontSize: 13, color: T.faint, margin: "0 0 14px", lineHeight: 1.6 }}>
-            A synthesis of your written profile, inspo board, closet, and outfit photos — broken into the distinct style lanes actually running through your closet.
-          </p>
-          {stale && !assessBusy && (
-            <div style={{ fontFamily: mono, fontSize: 11, color: T.tobacco, marginBottom: 10, animation: "rise .3s ease" }}>
-              Your profile, inspo, or outfits changed since this assessment.
-            </div>
-          )}
-          <Btn onClick={runAssessment} disabled={assessBusy}>
-            {assessBusy ? "Assessing…" : assessment ? "Update assessment" : "Run assessment"}
-          </Btn>
-          {assessBusy && <Thinking label="Reading between your pieces…" />}
-          {assessment ? (
-            <div style={{ marginTop: 16, animation: "rise .3s ease" }}>
-              {(assessment.profiles || []).map((prof, idx) => (
-                <div
-                  key={idx}
-                  style={{
-                    background: T.card,
-                    border: `1px solid ${stale ? T.tobacco : T.line}`,
-                    borderRadius: 10,
-                    padding: "18px 16px",
-                    marginBottom: 14,
-                  }}
-                >
-                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-                    <div style={{ fontFamily: mono, fontSize: 10, letterSpacing: "0.2em", color: T.tobacco }}>
-                      {(prof.rank || "").toUpperCase()}
-                    </div>
-                    {prof.activity && (
-                      <div
-                        style={{
-                          fontFamily: mono,
-                          fontSize: 9,
-                          letterSpacing: "0.1em",
-                          padding: "3px 8px",
-                          borderRadius: 20,
-                          border: `1px solid ${prof.activity === "active" ? T.olive : T.line}`,
-                          color: prof.activity === "active" ? T.olive : T.faint,
-                          textTransform: "uppercase",
-                        }}
-                      >
-                        {prof.activity}
-                      </div>
-                    )}
-                  </div>
-                  <div style={{ fontFamily: serif, fontSize: 30, margin: "4px 0 10px" }}>{prof.headline}</div>
-                  <p style={{ fontSize: 14, lineHeight: 1.65, color: T.stone, margin: "0 0 14px" }}>{prof.read}</p>
-                  <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: prof.direction ? 14 : 0 }}>
-                    {(prof.pillars || []).map((p, i) => (
-                      <span
-                        key={i}
-                        style={{
-                          padding: "5px 11px",
-                          borderRadius: 20,
-                          border: `1px solid ${T.line}`,
-                          background: T.cardUp,
-                          fontFamily: mono,
-                          fontSize: 10,
-                          letterSpacing: "0.08em",
-                          color: T.bone,
-                          textTransform: "uppercase",
-                        }}
-                      >
-                        {p}
-                      </span>
-                    ))}
-                  </div>
-                  {prof.direction && (
-                    <div style={{ fontSize: 13, lineHeight: 1.55, color: T.stone, borderLeft: `2px solid ${T.olive}`, paddingLeft: 10 }}>
-                      <span style={{ fontFamily: mono, fontSize: 10, letterSpacing: "0.15em", color: T.olive }}>DIRECTION: </span>
-                      {prof.direction}
-                    </div>
-                  )}
-                </div>
-              ))}
-              {assessment.shared_pieces?.length > 0 && (
-                <div>
-                  <div style={{ fontFamily: mono, fontSize: 10, letterSpacing: "0.2em", color: T.tobacco, marginBottom: 8 }}>
-                    SHARED PIECES
-                  </div>
-                  <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                    {assessment.shared_pieces.map((sp, i) => (
-                      <div
-                        key={i}
-                        style={{
-                          fontSize: 13,
-                          lineHeight: 1.5,
-                          color: T.stone,
-                          background: T.card,
-                          border: `1px solid ${T.line}`,
-                          borderRadius: 8,
-                          padding: "10px 12px",
-                        }}
-                      >
-                        <span style={{ color: T.bone }}>{sp.item}</span>
-                        <span style={{ color: T.faint }}> — holds together {(sp.profiles || []).join(" + ")}</span>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-            </div>
-          ) : !assessBusy ? (
-            <div style={{ padding: "48px 12px", textAlign: "center" }}>
-              <div style={{ fontFamily: serif, fontSize: 22, color: T.stone }}>No assessment yet.</div>
-              <div style={{ fontSize: 13, color: T.faint, marginTop: 8, lineHeight: 1.6 }}>
-                Fill in your style profile and run the assessment to see the style lanes running through your closet.
-              </div>
-            </div>
-          ) : null}
-        </div>
-      )}
-
       {/* ── Add Inspiration ── */}
       {subTab === "inspo" && (
         <div>
-          <p style={{ fontSize: 13, color: T.faint, margin: "0 0 14px", lineHeight: 1.6 }}>
+          <p style={{ ...TYPE.footnote, color: T.faint, margin: `0 0 ${SPACE.md}px`, lineHeight: 1.6 }}>
             Upload Pinterest saves or fit pics you're drawn to. The AI reads the vibe and steers your generated fits.
           </p>
           <input
@@ -1872,9 +2245,6 @@ function Profile({ profile, saveProfile, inspo, saveInspo, removeInspo, assessme
             style={{ display: "none" }}
             onChange={handleInspoFiles}
           />
-          <Btn onClick={() => inspoRef.current.click()} disabled={inspoBusy}>
-            {inspoBusy ? "Reading the vibe…" : "+ Add inspo images"}
-          </Btn>
           {inspoBusy && (
             <Thinking
               label={
@@ -1891,9 +2261,9 @@ function Profile({ profile, saveProfile, inspo, saveInspo, removeInspo, assessme
               style={{
                 background: T.card,
                 border: `1px solid ${T.line}`,
-                borderRadius: 10,
+                borderRadius: RADIUS.md,
                 overflow: "hidden",
-                marginTop: 14,
+                marginTop: SPACE.md,
                 animation: "rise .3s ease",
               }}
             >
@@ -1902,11 +2272,11 @@ function Profile({ profile, saveProfile, inspo, saveInspo, removeInspo, assessme
                 alt={selectedInspo.vibe}
                 style={{ width: "100%", maxHeight: 280, objectFit: "cover", display: "block" }}
               />
-              <div style={{ padding: "14px 14px 16px" }}>
-                <div style={{ fontFamily: mono, fontSize: 9, letterSpacing: "0.18em", color: T.tobacco, marginBottom: 6 }}>
+              <div style={{ padding: `${SPACE.md}px ${SPACE.md}px ${SPACE.md + 2}px` }}>
+                <div style={{ ...labelType(T.tobacco, "0.18em"), marginBottom: SPACE.xs + 2 }}>
                   THE VIBE
                 </div>
-                <p style={{ fontSize: 13, lineHeight: 1.6, color: T.stone, margin: "0 0 14px" }}>
+                <p style={{ ...TYPE.footnote, lineHeight: 1.6, color: T.stone, margin: `0 0 ${SPACE.md}px` }}>
                   {selectedInspo.vibe}
                 </p>
                 <Btn
@@ -1927,8 +2297,8 @@ function Profile({ profile, saveProfile, inspo, saveInspo, removeInspo, assessme
               style={{
                 display: "grid",
                 gridTemplateColumns: "1fr 1fr 1fr 1fr",
-                gap: 6,
-                marginTop: 14,
+                gap: TOUCH.gap,
+                marginTop: SPACE.md,
               }}
             >
               {inspo.map((item) => (
@@ -1939,7 +2309,7 @@ function Profile({ profile, saveProfile, inspo, saveInspo, removeInspo, assessme
                   style={{
                     padding: 0,
                     border: `2px solid ${selectedInspo?.id === item.id ? T.tobacco : "transparent"}`,
-                    borderRadius: 6,
+                    borderRadius: RADIUS.sm - 2,
                     overflow: "hidden",
                     cursor: "pointer",
                     background: "none",
@@ -1956,9 +2326,9 @@ function Profile({ profile, saveProfile, inspo, saveInspo, removeInspo, assessme
               ))}
             </div>
           ) : !inspoBusy ? (
-            <div style={{ padding: "48px 12px", textAlign: "center" }}>
-              <div style={{ fontFamily: serif, fontSize: 22, color: T.stone }}>Board is empty.</div>
-              <div style={{ fontSize: 13, color: T.faint, marginTop: 8, lineHeight: 1.6 }}>
+            <div style={{ padding: `${SPACE.xxxxl}px ${SPACE.md}px`, textAlign: "center" }}>
+              <div style={{ fontFamily: serif, ...TYPE.title2, color: T.stone }}>Board is empty.</div>
+              <div style={{ ...TYPE.footnote, color: T.faint, marginTop: SPACE.sm, lineHeight: 1.6 }}>
                 Add Pinterest saves, editorial shots, or fit pics that represent the aesthetic you're building.
               </div>
             </div>
@@ -1967,54 +2337,19 @@ function Profile({ profile, saveProfile, inspo, saveInspo, removeInspo, assessme
       )}
 
       {/* ── My Style ── */}
-      {subTab === "profile" && (
-        <div>
-          <p style={{ fontSize: 13, color: T.faint, margin: "0 0 14px", lineHeight: 1.6 }}>
-            The AI judges every fit and scan against this. Keep it honest — colors, cuts, what you never wear.
-          </p>
-          {unsaved && (
-            <div style={{ fontFamily: mono, fontSize: 11, color: T.tobacco, marginBottom: 10, animation: "rise .3s ease" }}>
-              Unsaved changes
-            </div>
-          )}
-          <Btn onClick={() => { saveProfile(draft); flash("Profile saved"); }}>
-            Save my style
-          </Btn>
-          <textarea
-            value={draft}
-            onChange={(e) => setDraft(e.target.value)}
-            rows={8}
-            style={{
-              width: "100%",
-              padding: 14,
-              borderRadius: 8,
-              border: `1px solid ${T.line}`,
-              background: T.card,
-              color: T.bone,
-              fontSize: 14,
-              lineHeight: 1.6,
-              fontFamily: sans,
-              resize: "vertical",
-              marginTop: 12,
-            }}
-          />
-          {!draft.trim() && (
-            <div style={{ padding: "32px 12px 0", textAlign: "center" }}>
-              <div style={{ fontSize: 13, color: T.faint, lineHeight: 1.6 }}>
-                Describe your aesthetic — preferred colors, silhouettes, what you'd never wear. The more specific, the sharper the AI's suggestions.
-              </div>
-            </div>
-          )}
-          <MyOutfitsSection
-            outfits={myOutfits}
-            pieces={pieces}
-            saveMyOutfit={saveMyOutfit}
-            removeMyOutfit={removeMyOutfit}
-            updateMyOutfit={updateMyOutfit}
-            saveInspo={saveInspo}
-            flash={flash}
-          />
-        </div>
+      {subTab === "myoutfits" && (
+        <MyOutfitsSection
+          outfits={myOutfits}
+          pieces={pieces}
+          saveMyOutfit={saveMyOutfit}
+          removeMyOutfit={removeMyOutfit}
+          updateMyOutfit={updateMyOutfit}
+          saveInspo={saveInspo}
+          flash={flash}
+          assessment={assessment}
+          showAdd={showAddOutfit}
+          setShowAdd={setShowAddOutfit}
+        />
       )}
     </div>
   );
@@ -2040,7 +2375,7 @@ function OutfitCard({ outfit, onClick }) {
     <button
       onClick={onClick}
       style={{
-        padding: 0, border: `1px solid ${T.line}`, borderRadius: 8,
+        padding: 0, border: `1px solid ${T.line}`, borderRadius: RADIUS.card,
         overflow: "hidden", background: T.card, cursor: "pointer",
         display: "block", textAlign: "left", width: "100%",
         animation: "rise .3s ease",
@@ -2054,24 +2389,24 @@ function OutfitCard({ outfit, onClick }) {
           <div style={{
             position: "absolute", top: 5, right: 5,
             background: "rgba(27,24,21,.75)", backdropFilter: "blur(4px)",
-            borderRadius: 10, padding: "2px 6px",
-            fontFamily: mono, fontSize: 9, color: T.stone,
+            borderRadius: RADIUS.pill, padding: "2px 6px",
+            fontFamily: mono, ...TYPE.caption, color: T.stone,
           }}>+{outfit.imageIds.length - 1}</div>
         )}
         {outfit.inInspo && (
           <div style={{
             position: "absolute", top: 5, left: 5,
-            background: "rgba(176,141,87,.85)", borderRadius: 10,
-            padding: "2px 6px", fontFamily: mono, fontSize: 8,
+            background: "rgba(176,141,87,.85)", borderRadius: RADIUS.pill,
+            padding: "2px 6px", fontFamily: mono, ...TYPE.caption,
             color: T.bg, letterSpacing: "0.08em",
           }}>INSPO</div>
         )}
       </div>
-      <div style={{ padding: "7px 8px 9px" }}>
-        <div style={{ fontFamily: mono, fontSize: 10, color: T.tobacco }}>{date}</div>
+      <div style={{ padding: `${SPACE.xs + 3}px ${SPACE.sm}px ${SPACE.xs + 5}px` }}>
+        <div style={{ ...TYPE.caption, fontFamily: mono, color: T.tobacco }}>{date}</div>
         {outfit.occasion && (
           <div style={{
-            fontSize: 11, color: T.stone, marginTop: 2, lineHeight: 1.3,
+            ...TYPE.caption, color: T.stone, marginTop: 2, lineHeight: 1.3,
             overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
           }}>{outfit.occasion}</div>
         )}
@@ -2106,9 +2441,9 @@ function PiecePicker({ pieces, selectedIds, onToggle, label }) {
   };
 
   return (
-    <div style={{ marginBottom: 14 }}>
+    <div style={{ marginBottom: SPACE.md }}>
       {label && (
-        <div style={{ fontFamily: mono, fontSize: 10, letterSpacing: "0.14em", color: T.faint, marginBottom: 6 }}>
+        <div style={{ ...labelType(T.faint), marginBottom: SPACE.xs }}>
           {label}
         </div>
       )}
@@ -2117,37 +2452,43 @@ function PiecePicker({ pieces, selectedIds, onToggle, label }) {
         onChange={(e) => setSearch(e.target.value)}
         placeholder="Search pieces…"
         style={{
-          width: "100%", padding: "8px 10px", borderRadius: 6,
+          width: "100%", padding: `${SPACE.sm}px ${SPACE.md - 2}px`, borderRadius: RADIUS.sm,
           border: `1px solid ${T.line}`, background: T.cardUp,
-          color: T.bone, fontSize: 12, fontFamily: sans, marginBottom: 8,
+          color: T.bone, ...TYPE.callout, fontFamily: sans, marginBottom: SPACE.sm,
         }}
       />
-      <div style={{ display: "flex", gap: 6, overflowX: "auto", paddingBottom: 4, marginBottom: 8 }}>
-        <button onClick={() => setCategory("all")} style={pillStyle(category === "all")}>All {pieces.length}</button>
+      <div style={{ display: "flex", gap: TOUCH.gap, overflowX: "auto", paddingBottom: SPACE.xs, marginBottom: SPACE.sm }}>
+        <button onClick={() => setCategory("all")} style={chipHitStyle}>
+          <span style={chipVisualStyle(category === "all")}>All {pieces.length}</span>
+        </button>
         {cats.map((c) => (
-          <button key={c.id} onClick={() => setCategory(c.id)} style={pillStyle(category === c.id)}>
-            {c.id} {c.count}
+          <button key={c.id} onClick={() => setCategory(c.id)} style={chipHitStyle}>
+            <span style={chipVisualStyle(category === c.id)}>{c.id} {c.count}</span>
           </button>
         ))}
       </div>
-      <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: TOUCH.gap }}>
         {selectedPieces.length > 0 && (
           <>
-            <div style={{ width: "100%", fontFamily: mono, fontSize: 9, letterSpacing: "0.14em", color: T.tobacco }}>
+            <div style={{ width: "100%", ...labelType(T.tobacco) }}>
               SELECTED
             </div>
             {selectedPieces.map((p) => (
-              <button key={p.id} onClick={() => handleToggle(p.id)} style={toggleStyle(true)}>{p.name}</button>
+              <button key={p.id} onClick={() => handleToggle(p.id)} style={chipHitStyle}>
+                <span style={toggleVisualStyle(true)}>{p.name}</span>
+              </button>
             ))}
-            {unselected.length > 0 && <div style={{ width: "100%", height: 1, background: T.line, margin: "2px 0" }} />}
+            {unselected.length > 0 && <div style={{ width: "100%", height: 1, background: T.line, margin: `${SPACE.xs / 2}px 0` }} />}
           </>
         )}
         {unselected.length > 0 ? (
           unselected.map((p) => (
-            <button key={p.id} onClick={() => handleToggle(p.id)} style={toggleStyle(false)}>{p.name}</button>
+            <button key={p.id} onClick={() => handleToggle(p.id)} style={chipHitStyle}>
+              <span style={toggleVisualStyle(false)}>{p.name}</span>
+            </button>
           ))
         ) : selectedPieces.length === 0 ? (
-          <div style={{ fontFamily: mono, fontSize: 11, color: T.faint, padding: "8px 0" }}>No pieces match.</div>
+          <div style={{ ...TYPE.footnote, fontFamily: mono, color: T.faint, padding: `${SPACE.sm}px 0` }}>No pieces match.</div>
         ) : null}
       </div>
     </div>
@@ -2185,44 +2526,46 @@ function DateRangeChip({ from, to, onApply }) {
 
   return (
     <div style={{ position: "relative", flexShrink: 0 }}>
-      <button onClick={() => setOpen((o) => !o)} style={pillStyle(active)}>{label}</button>
+      <button onClick={() => setOpen((o) => !o)} style={chipHitStyle}>
+        <span style={chipVisualStyle(active)}>{label}</span>
+      </button>
       {open && (
         <>
           <div onClick={() => setOpen(false)} style={{ position: "fixed", inset: 0, zIndex: 90 }} />
           <div style={{
             position: "absolute", top: "calc(100% + 6px)", left: 0, zIndex: 91,
             width: 220, background: T.cardUp, border: `1px solid ${T.line}`,
-            borderRadius: 10, padding: 12, boxShadow: "0 12px 28px rgba(0,0,0,.45)",
+            borderRadius: RADIUS.md, padding: SPACE.md, boxShadow: "0 12px 28px rgba(0,0,0,.45)",
           }}>
-            <div style={{ display: "flex", flexDirection: "column", gap: 2, marginBottom: 10 }}>
+            <div style={{ display: "flex", flexDirection: "column", gap: SPACE.xs, marginBottom: SPACE.sm }}>
               {presets.map((p) => (
                 <button key={p.label} onClick={() => applyPreset(p)} style={{
-                  textAlign: "left", padding: "7px 8px", borderRadius: 6,
+                  textAlign: "left", minHeight: TOUCH.min, padding: `0 ${SPACE.sm}px`, borderRadius: RADIUS.sm,
                   border: "none", background: "none", color: T.stone,
-                  fontFamily: mono, fontSize: 11, cursor: "pointer",
+                  fontFamily: mono, ...TYPE.footnote, cursor: "pointer",
                 }}>{p.label}</button>
               ))}
             </div>
-            <div style={{ height: 1, background: T.line, margin: "4px 0 10px" }} />
-            <div style={{ fontFamily: mono, fontSize: 9, letterSpacing: "0.12em", color: T.faint, marginBottom: 4 }}>FROM</div>
+            <div style={{ height: 1, background: T.line, margin: `${SPACE.xs}px 0 ${SPACE.sm}px` }} />
+            <div style={{ ...labelType(T.faint, "0.12em"), marginBottom: SPACE.xs }}>FROM</div>
             <input type="date" value={draftFrom} onChange={(e) => setDraftFrom(e.target.value)} style={{
-              width: "100%", padding: "7px 8px", borderRadius: 6, border: `1px solid ${T.line}`,
-              background: T.card, color: T.bone, fontSize: 12, fontFamily: sans, marginBottom: 8, colorScheme: "dark",
+              width: "100%", minHeight: TOUCH.min, padding: `0 ${SPACE.sm}px`, borderRadius: RADIUS.sm, border: `1px solid ${T.line}`,
+              background: T.card, color: T.bone, ...TYPE.callout, fontFamily: sans, marginBottom: SPACE.sm, colorScheme: "dark",
             }} />
-            <div style={{ fontFamily: mono, fontSize: 9, letterSpacing: "0.12em", color: T.faint, marginBottom: 4 }}>TO</div>
+            <div style={{ ...labelType(T.faint, "0.12em"), marginBottom: SPACE.xs }}>TO</div>
             <input type="date" value={draftTo} onChange={(e) => setDraftTo(e.target.value)} style={{
-              width: "100%", padding: "7px 8px", borderRadius: 6, border: `1px solid ${T.line}`,
-              background: T.card, color: T.bone, fontSize: 12, fontFamily: sans, marginBottom: 10, colorScheme: "dark",
+              width: "100%", minHeight: TOUCH.min, padding: `0 ${SPACE.sm}px`, borderRadius: RADIUS.sm, border: `1px solid ${T.line}`,
+              background: T.card, color: T.bone, ...TYPE.callout, fontFamily: sans, marginBottom: SPACE.sm, colorScheme: "dark",
             }} />
-            <div style={{ display: "flex", gap: 8 }}>
+            <div style={{ display: "flex", gap: TOUCH.gap }}>
               <button onClick={() => { onApply("", ""); setOpen(false); }} style={{
-                flex: 1, padding: "8px 0", borderRadius: 6, border: `1px solid ${T.line}`,
-                background: "none", color: T.faint, fontFamily: mono, fontSize: 10,
+                flex: 1, minHeight: TOUCH.min, borderRadius: RADIUS.sm, border: `1px solid ${T.line}`,
+                background: "none", color: T.faint, fontFamily: mono, ...TYPE.caption,
                 letterSpacing: "0.08em", textTransform: "uppercase", cursor: "pointer",
               }}>Clear</button>
               <button onClick={() => { onApply(draftFrom, draftTo); setOpen(false); }} style={{
-                flex: 1, padding: "8px 0", borderRadius: 6, border: "none",
-                background: T.tobacco, color: T.bg, fontFamily: mono, fontSize: 10,
+                flex: 1, minHeight: TOUCH.min, borderRadius: RADIUS.sm, border: "none",
+                background: T.tobacco, color: T.bg, fontFamily: mono, ...TYPE.caption,
                 letterSpacing: "0.08em", textTransform: "uppercase", cursor: "pointer",
               }}>Apply</button>
             </div>
@@ -2233,13 +2576,14 @@ function DateRangeChip({ from, to, onApply }) {
   );
 }
 
-function OutfitAddFlow({ pieces, onSave, onClose, flash }) {
+function OutfitAddFlow({ pieces, profiles, onSave, onClose, flash }) {
   const cameraRef = useRef();
   const libRef = useRef();
   const [view, setView] = useState("pick");
   const [staged, setStaged] = useState([]);
   const [dateWorn, setDateWorn] = useState(() => new Date().toISOString().slice(0, 10));
   const [pieceIds, setPieceIds] = useState([]);
+  const [profileTag, setProfileTag] = useState(null);
   const [occasion, setOccasion] = useState("");
   const [note, setNote] = useState("");
   const [saving, setSaving] = useState(false);
@@ -2289,6 +2633,7 @@ function OutfitAddFlow({ pieces, onSave, onClose, flash }) {
       imageIds: savedIds,
       dateWorn,
       pieceIds,
+      profileTag,
       occasion: occasion.trim(),
       note: note.trim(),
       inInspo: false,
@@ -2303,7 +2648,7 @@ function OutfitAddFlow({ pieces, onSave, onClose, flash }) {
     setPieceIds((prev) => prev.includes(id) ? prev.filter((p) => p !== id) : [...prev, id]);
 
   const fieldLabel = (txt) => (
-    <div style={{ fontFamily: mono, fontSize: 10, letterSpacing: "0.14em", color: T.faint, marginBottom: 6 }}>{txt}</div>
+    <div style={{ ...labelType(T.faint), marginBottom: SPACE.xs }}>{txt}</div>
   );
 
   return (
@@ -2311,53 +2656,63 @@ function OutfitAddFlow({ pieces, onSave, onClose, flash }) {
       <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.55)", zIndex: 200 }} />
       <div style={{
         position: "fixed", bottom: 0, left: 0, right: 0, maxHeight: "90vh",
-        background: T.card, borderRadius: "16px 16px 0 0", zIndex: 201,
+        background: T.card, borderRadius: `${RADIUS.sheet}px ${RADIUS.sheet}px 0 0`, zIndex: 201,
         display: "flex", flexDirection: "column",
         animation: "slideUp .28s ease", border: `1px solid ${T.line}`, borderBottom: "none",
       }}>
-        <div onClick={onClose} style={{ display: "flex", justifyContent: "center", padding: "12px 0 8px", cursor: "pointer", flexShrink: 0 }}>
+        <div onClick={onClose} style={{ display: "flex", justifyContent: "center", padding: `${SPACE.md}px 0 ${SPACE.sm}px`, cursor: "pointer", flexShrink: 0 }}>
           <div style={{ width: 36, height: 4, borderRadius: 2, background: T.line }} />
         </div>
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "0 16px 12px", flexShrink: 0, borderBottom: `1px solid ${T.line}` }}>
-          <div style={{ fontFamily: serif, fontSize: 20 }}>{view === "pick" ? "Add outfit" : "Review"}</div>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: `0 ${LAYOUT.screenMargin}px ${SPACE.md}px`, flexShrink: 0, borderBottom: `1px solid ${T.line}` }}>
+          <div style={{ fontFamily: serif, ...TYPE.title3 }}>{view === "pick" ? "Add outfit" : "Review"}</div>
           <button
             onClick={view === "pick" ? onClose : () => setView("pick")}
-            style={{ border: "none", background: "none", color: T.faint, fontSize: 20, cursor: "pointer", lineHeight: 1 }}
+            style={{ minWidth: TOUCH.min, minHeight: TOUCH.min, border: "none", background: "none", color: T.faint, ...TYPE.title3, cursor: "pointer", lineHeight: 1 }}
           >{view === "pick" ? "×" : "←"}</button>
         </div>
-        <div style={{ overflowY: "auto", flex: 1, padding: "16px 16px 40px" }}>
+        <div style={{ overflowY: "auto", flex: 1, padding: `${SPACE.md}px ${LAYOUT.screenMargin}px ${SPACE.xxxxl}px` }}>
           {view === "pick" && (
-            <div style={{ display: "flex", flexDirection: "column", gap: 10, paddingTop: 8 }}>
+            <div style={{ display: "flex", flexDirection: "column", gap: SPACE.sm, paddingTop: SPACE.xs }}>
               <input ref={cameraRef} type="file" accept="image/*" capture="environment" multiple style={{ display: "none" }}
                 onChange={(e) => { addFiles(e.target.files); e.target.value = ""; }} />
               <input ref={libRef} type="file" accept="image/*" multiple style={{ display: "none" }}
                 onChange={(e) => { addFiles(e.target.files); e.target.value = ""; }} />
               <Btn onClick={() => cameraRef.current.click()}>Take photo</Btn>
               <Btn ghost onClick={() => libRef.current.click()}>Choose from library</Btn>
-              <div style={{ fontFamily: mono, fontSize: 10, color: T.faint, textAlign: "center", marginTop: 4 }}>
+              <div style={{ ...TYPE.caption, fontFamily: mono, color: T.faint, textAlign: "center", marginTop: SPACE.xs }}>
                 Up to 3 photos per outfit
               </div>
             </div>
           )}
           {view === "review" && (
             <div>
-              <div style={{ display: "flex", gap: 8, marginBottom: 16, overflowX: "auto", paddingBottom: 4 }}>
+              <div style={{ display: "flex", gap: TOUCH.gap, marginBottom: SPACE.md, overflowX: "auto", paddingBottom: SPACE.xs }}>
                 {staged.map((img) => (
                   <div key={img.id} style={{
                     position: "relative", flexShrink: 0, width: 100, height: 133,
-                    borderRadius: 8, overflow: "hidden", border: `1px solid ${T.line}`,
+                    borderRadius: RADIUS.sm, overflow: "hidden", border: `1px solid ${T.line}`,
                   }}>
                     <img src={img.dataUrl} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
-                    <button onClick={() => removeStaged(img.id)} style={{
-                      position: "absolute", top: 4, right: 4, width: 22, height: 22,
-                      borderRadius: 11, border: "none", background: "rgba(27,24,21,.8)",
-                      color: T.stone, fontSize: 13, lineHeight: 1, cursor: "pointer", padding: 0,
-                    }}>×</button>
+                    <button
+                      onClick={() => removeStaged(img.id)}
+                      aria-label="Remove photo"
+                      style={{
+                        position: "absolute", top: 0, right: 0, width: TOUCH.min, height: TOUCH.min,
+                        display: "flex", alignItems: "center", justifyContent: "center",
+                        border: "none", background: "none", padding: 0, cursor: "pointer",
+                      }}
+                    >
+                      <span style={{
+                        width: 22, height: 22, borderRadius: RADIUS.pill,
+                        display: "flex", alignItems: "center", justifyContent: "center",
+                        background: "rgba(27,24,21,.8)", color: T.stone, fontSize: 13, lineHeight: 1,
+                      }}>×</span>
+                    </button>
                   </div>
                 ))}
                 {staged.length < 3 && (
                   <button onClick={() => libRef.current.click()} style={{
-                    flexShrink: 0, width: 100, height: 133, borderRadius: 8,
+                    flexShrink: 0, width: 100, height: 133, borderRadius: RADIUS.sm,
                     border: `1px dashed ${T.line}`, background: "none", color: T.faint,
                     fontSize: 24, cursor: "pointer",
                     display: "flex", alignItems: "center", justifyContent: "center",
@@ -2371,15 +2726,28 @@ function OutfitAddFlow({ pieces, onSave, onClose, flash }) {
                 value={dateWorn}
                 onChange={(e) => setDateWorn(e.target.value)}
                 style={{
-                  width: "100%", padding: "12px 14px", borderRadius: 8,
+                  width: "100%", minHeight: TOUCH.min, padding: `0 ${SPACE.md + 2}px`, borderRadius: RADIUS.sm,
                   border: `1px solid ${T.line}`, background: T.cardUp,
-                  color: T.bone, fontSize: 14, fontFamily: sans,
-                  marginBottom: 12, colorScheme: "dark",
+                  color: T.bone, ...TYPE.subhead, fontFamily: sans,
+                  marginBottom: SPACE.md, colorScheme: "dark",
                 }}
               />
 
               {pieces.length > 0 && (
                 <PiecePicker pieces={pieces} selectedIds={pieceIds} onToggle={togglePiece} label="PIECES WORN — tap to link" />
+              )}
+
+              {profiles.length > 0 && (
+                <>
+                  {fieldLabel("STYLE PROFILE (optional)")}
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: TOUCH.gap, marginBottom: SPACE.md }}>
+                    {profiles.map((p) => (
+                      <button key={p.rank} onClick={() => setProfileTag((prev) => prev === p.rank ? null : p.rank)} style={chipHitStyle}>
+                        <span style={chipVisualStyle(profileTag === p.rank)}>{p.headline}</span>
+                      </button>
+                    ))}
+                  </div>
+                </>
               )}
 
               {fieldLabel("OCCASION (optional)")}
@@ -2388,9 +2756,9 @@ function OutfitAddFlow({ pieces, onSave, onClose, flash }) {
                 onChange={(e) => setOccasion(e.target.value)}
                 placeholder="e.g. dinner out, work, weekend"
                 style={{
-                  width: "100%", padding: "12px 14px", borderRadius: 8,
+                  width: "100%", minHeight: TOUCH.min, padding: `0 ${SPACE.md + 2}px`, borderRadius: RADIUS.sm,
                   border: `1px solid ${T.line}`, background: T.cardUp,
-                  color: T.bone, fontSize: 14, fontFamily: sans, marginBottom: 12,
+                  color: T.bone, ...TYPE.subhead, fontFamily: sans, marginBottom: SPACE.md,
                 }}
               />
 
@@ -2401,15 +2769,15 @@ function OutfitAddFlow({ pieces, onSave, onClose, flash }) {
                 placeholder="How it felt, what you'd change…"
                 rows={3}
                 style={{
-                  width: "100%", padding: "12px 14px", borderRadius: 8,
+                  width: "100%", padding: `${SPACE.md - 2}px ${SPACE.md + 2}px`, borderRadius: RADIUS.sm,
                   border: `1px solid ${T.line}`, background: T.cardUp, color: T.bone,
-                  fontSize: 14, fontFamily: sans, resize: "vertical",
-                  marginBottom: 16, lineHeight: 1.5,
+                  ...TYPE.subhead, fontFamily: sans, resize: "vertical",
+                  marginBottom: SPACE.md + 4, lineHeight: 1.5,
                 }}
               />
 
               {pieceIds.length > 0 && (
-                <div style={{ fontFamily: mono, fontSize: 10, color: T.faint, marginBottom: 8 }}>
+                <div style={{ ...TYPE.caption, fontFamily: mono, color: T.faint, marginBottom: SPACE.sm }}>
                   {pieceIds.length} piece{pieceIds.length === 1 ? "" : "s"} selected
                 </div>
               )}
@@ -2424,11 +2792,12 @@ function OutfitAddFlow({ pieces, onSave, onClose, flash }) {
   );
 }
 
-function OutfitDetail({ outfit, pieces, onClose, onDelete, onUpdate, onAddToInspo }) {
+function OutfitDetail({ outfit, pieces, profiles, onClose, onDelete, onUpdate, onAddToInspo }) {
   const [view, setView] = useState("detail");
   const [images, setImages] = useState([]);
   const [editDate, setEditDate] = useState(outfit.dateWorn || "");
   const [editPieceIds, setEditPieceIds] = useState(outfit.pieceIds || []);
+  const [editProfileTag, setEditProfileTag] = useState(outfit.profileTag || null);
   const [editOccasion, setEditOccasion] = useState(outfit.occasion || "");
   const [editNote, setEditNote] = useState(outfit.note || "");
   const [saving, setSaving] = useState(false);
@@ -2439,6 +2808,7 @@ function OutfitDetail({ outfit, pieces, onClose, onDelete, onUpdate, onAddToInsp
   }, [outfit.id]);
 
   const linkedPieces = pieces.filter((p) => outfit.pieceIds?.includes(p.id));
+  const taggedProfile = (profiles || []).find((p) => p.rank === outfit.profileTag);
 
   const handleSave = async () => {
     setSaving(true);
@@ -2446,6 +2816,7 @@ function OutfitDetail({ outfit, pieces, onClose, onDelete, onUpdate, onAddToInsp
       ...outfit,
       dateWorn: editDate,
       pieceIds: editPieceIds,
+      profileTag: editProfileTag,
       occasion: editOccasion.trim(),
       note: editNote.trim(),
     });
@@ -2461,7 +2832,7 @@ function OutfitDetail({ outfit, pieces, onClose, onDelete, onUpdate, onAddToInsp
     : "";
 
   const fieldLabel = (txt) => (
-    <div style={{ fontFamily: mono, fontSize: 10, letterSpacing: "0.14em", color: T.faint, marginBottom: 6 }}>{txt}</div>
+    <div style={{ ...labelType(T.faint), marginBottom: SPACE.xs }}>{txt}</div>
   );
 
   return (
@@ -2469,71 +2840,80 @@ function OutfitDetail({ outfit, pieces, onClose, onDelete, onUpdate, onAddToInsp
       <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.55)", zIndex: 200 }} />
       <div style={{
         position: "fixed", bottom: 0, left: 0, right: 0, maxHeight: "90vh",
-        background: T.card, borderRadius: "16px 16px 0 0", zIndex: 201,
+        background: T.card, borderRadius: `${RADIUS.sheet}px ${RADIUS.sheet}px 0 0`, zIndex: 201,
         display: "flex", flexDirection: "column",
         animation: "slideUp .28s ease", border: `1px solid ${T.line}`, borderBottom: "none",
       }}>
-        <div onClick={onClose} style={{ display: "flex", justifyContent: "center", padding: "12px 0 8px", cursor: "pointer", flexShrink: 0 }}>
+        <div onClick={onClose} style={{ display: "flex", justifyContent: "center", padding: `${SPACE.md}px 0 ${SPACE.sm}px`, cursor: "pointer", flexShrink: 0 }}>
           <div style={{ width: 36, height: 4, borderRadius: 2, background: T.line }} />
         </div>
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "0 16px 12px", flexShrink: 0, borderBottom: `1px solid ${T.line}` }}>
-          <div style={{ fontFamily: serif, fontSize: 20 }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: `0 ${LAYOUT.screenMargin}px ${SPACE.md}px`, flexShrink: 0, borderBottom: `1px solid ${T.line}` }}>
+          <div style={{ fontFamily: serif, ...TYPE.title3 }}>
             {view === "detail" ? date : view === "edit" ? "Edit outfit" : "Delete outfit?"}
           </div>
           <button
             onClick={view === "detail" ? onClose : () => setView("detail")}
-            style={{ border: "none", background: "none", color: T.faint, fontSize: 20, cursor: "pointer", lineHeight: 1 }}
+            style={{ minWidth: TOUCH.min, minHeight: TOUCH.min, border: "none", background: "none", color: T.faint, ...TYPE.title3, cursor: "pointer", lineHeight: 1 }}
           >{view === "detail" ? "×" : "←"}</button>
         </div>
-        <div style={{ overflowY: "auto", flex: 1, padding: "0 16px 40px" }}>
+        <div style={{ overflowY: "auto", flex: 1, padding: `0 ${LAYOUT.screenMargin}px ${SPACE.xxxxl}px` }}>
 
           {view === "detail" && (
             <div>
               {images.length > 0 && (
-                <div style={{ display: "flex", gap: 8, marginTop: 14, overflowX: "auto", paddingBottom: 4 }}>
+                <div style={{ display: "flex", gap: TOUCH.gap, marginTop: SPACE.md, overflowX: "auto", paddingBottom: SPACE.xs }}>
                   {images.map((src, i) => (
                     <img key={i} src={src} alt="" style={{
                       flexShrink: 0,
                       width: images.length === 1 ? "100%" : 180,
                       height: images.length === 1 ? "auto" : 240,
                       maxHeight: 340,
-                      objectFit: "cover", borderRadius: 8, border: `1px solid ${T.line}`,
+                      objectFit: "cover", borderRadius: RADIUS.sm, border: `1px solid ${T.line}`,
                     }} />
                   ))}
                 </div>
               )}
               {outfit.occasion && (
-                <div style={{ fontSize: 15, color: T.bone, marginTop: 14, lineHeight: 1.4 }}>{outfit.occasion}</div>
+                <div style={{ ...TYPE.subhead, color: T.bone, marginTop: SPACE.md, lineHeight: 1.4 }}>{outfit.occasion}</div>
               )}
               {outfit.note && (
-                <p style={{ fontSize: 13, color: T.stone, lineHeight: 1.6, marginTop: 8, marginBottom: 0 }}>{outfit.note}</p>
+                <p style={{ ...TYPE.footnote, color: T.stone, lineHeight: 1.6, marginTop: SPACE.sm, marginBottom: 0 }}>{outfit.note}</p>
               )}
               {linkedPieces.length > 0 && (
-                <div style={{ marginTop: 14 }}>
-                  <div style={{ fontFamily: mono, fontSize: 9, letterSpacing: "0.18em", color: T.faint, marginBottom: 8 }}>PIECES</div>
-                  <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                <div style={{ marginTop: SPACE.md }}>
+                  <div style={{ ...labelType(T.faint, "0.18em"), marginBottom: SPACE.sm }}>PIECES</div>
+                  <div style={{ display: "flex", gap: TOUCH.gap, flexWrap: "wrap" }}>
                     {linkedPieces.map((p) => (
                       <span key={p.id} style={{
-                        padding: "4px 10px", borderRadius: 20, fontFamily: mono, fontSize: 10,
+                        padding: "4px 10px", borderRadius: RADIUS.pill, fontFamily: mono, ...TYPE.caption,
                         border: `1px solid ${T.line}`, color: T.stone,
                       }}>{p.name}</span>
                     ))}
                   </div>
                 </div>
               )}
-              <div style={{ marginTop: 20, display: "flex", flexDirection: "column", gap: 8 }}>
+              {taggedProfile && (
+                <div style={{ marginTop: SPACE.md }}>
+                  <div style={{ ...labelType(T.faint, "0.18em"), marginBottom: SPACE.sm }}>STYLE PROFILE</div>
+                  <span style={{
+                    padding: "4px 10px", borderRadius: RADIUS.pill, fontFamily: mono, ...TYPE.caption,
+                    border: `1px solid ${T.tobacco}`, color: T.tobacco,
+                  }}>{taggedProfile.headline}</span>
+                </div>
+              )}
+              <div style={{ marginTop: SPACE.lg, display: "flex", flexDirection: "column", gap: SPACE.sm }}>
                 {!outfit.inInspo ? (
                   <Btn ghost onClick={() => onAddToInspo(outfit)}>Add to inspo board</Btn>
                 ) : (
-                  <div style={{ fontFamily: mono, fontSize: 10, color: T.tobacco, textAlign: "center", padding: "8px 0" }}>
+                  <div style={{ ...TYPE.caption, fontFamily: mono, color: T.tobacco, textAlign: "center", padding: `${SPACE.sm}px 0` }}>
                     ✓ On your inspo board
                   </div>
                 )}
                 <Btn ghost onClick={() => setView("edit")}>Edit</Btn>
                 <button onClick={() => setView("confirm")} style={{
-                  width: "100%", padding: "14px 16px", borderRadius: 8,
+                  width: "100%", minHeight: TOUCH.min, padding: `0 ${LAYOUT.screenMargin}px`, borderRadius: RADIUS.sm,
                   border: `1px solid ${T.line}`, background: "none",
-                  color: T.bad, fontFamily: mono, fontSize: 12,
+                  color: T.bad, fontFamily: mono, ...TYPE.caption,
                   letterSpacing: "0.12em", textTransform: "uppercase", cursor: "pointer",
                 }}>Delete</button>
               </div>
@@ -2541,21 +2921,33 @@ function OutfitDetail({ outfit, pieces, onClose, onDelete, onUpdate, onAddToInsp
           )}
 
           {view === "edit" && (
-            <div style={{ paddingTop: 16 }}>
+            <div style={{ paddingTop: SPACE.md }}>
               {fieldLabel("DATE WORN")}
               <input
                 type="date"
                 value={editDate}
                 onChange={(e) => setEditDate(e.target.value)}
                 style={{
-                  width: "100%", padding: "12px 14px", borderRadius: 8,
+                  width: "100%", minHeight: TOUCH.min, padding: `0 ${SPACE.md + 2}px`, borderRadius: RADIUS.sm,
                   border: `1px solid ${T.line}`, background: T.cardUp,
-                  color: T.bone, fontSize: 14, fontFamily: sans,
-                  marginBottom: 12, colorScheme: "dark",
+                  color: T.bone, ...TYPE.subhead, fontFamily: sans,
+                  marginBottom: SPACE.md, colorScheme: "dark",
                 }}
               />
               {pieces.length > 0 && (
                 <PiecePicker pieces={pieces} selectedIds={editPieceIds} onToggle={toggleEditPiece} label="PIECES WORN" />
+              )}
+              {(profiles || []).length > 0 && (
+                <>
+                  {fieldLabel("STYLE PROFILE")}
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: TOUCH.gap, marginBottom: SPACE.md }}>
+                    {profiles.map((p) => (
+                      <button key={p.rank} onClick={() => setEditProfileTag((prev) => prev === p.rank ? null : p.rank)} style={chipHitStyle}>
+                        <span style={chipVisualStyle(editProfileTag === p.rank)}>{p.headline}</span>
+                      </button>
+                    ))}
+                  </div>
+                </>
               )}
               {fieldLabel("OCCASION")}
               <input
@@ -2563,9 +2955,9 @@ function OutfitDetail({ outfit, pieces, onClose, onDelete, onUpdate, onAddToInsp
                 onChange={(e) => setEditOccasion(e.target.value)}
                 placeholder="optional"
                 style={{
-                  width: "100%", padding: "12px 14px", borderRadius: 8,
+                  width: "100%", minHeight: TOUCH.min, padding: `0 ${SPACE.md + 2}px`, borderRadius: RADIUS.sm,
                   border: `1px solid ${T.line}`, background: T.cardUp,
-                  color: T.bone, fontSize: 14, fontFamily: sans, marginBottom: 12,
+                  color: T.bone, ...TYPE.subhead, fontFamily: sans, marginBottom: SPACE.md,
                 }}
               />
               {fieldLabel("NOTE")}
@@ -2575,14 +2967,14 @@ function OutfitDetail({ outfit, pieces, onClose, onDelete, onUpdate, onAddToInsp
                 placeholder="optional"
                 rows={3}
                 style={{
-                  width: "100%", padding: "12px 14px", borderRadius: 8,
+                  width: "100%", padding: `${SPACE.md - 2}px ${SPACE.md + 2}px`, borderRadius: RADIUS.sm,
                   border: `1px solid ${T.line}`, background: T.cardUp, color: T.bone,
-                  fontSize: 14, fontFamily: sans, resize: "vertical",
-                  marginBottom: 16, lineHeight: 1.5,
+                  ...TYPE.subhead, fontFamily: sans, resize: "vertical",
+                  marginBottom: SPACE.md + 4, lineHeight: 1.5,
                 }}
               />
               {editPieceIds.length > 0 && (
-                <div style={{ fontFamily: mono, fontSize: 10, color: T.faint, marginBottom: 8 }}>
+                <div style={{ ...TYPE.caption, fontFamily: mono, color: T.faint, marginBottom: SPACE.sm }}>
                   {editPieceIds.length} piece{editPieceIds.length === 1 ? "" : "s"} selected
                 </div>
               )}
@@ -2591,18 +2983,18 @@ function OutfitDetail({ outfit, pieces, onClose, onDelete, onUpdate, onAddToInsp
           )}
 
           {view === "confirm" && (
-            <div style={{ paddingTop: 24, textAlign: "center" }}>
-              <div style={{ fontFamily: serif, fontSize: 22, marginBottom: 10 }}>Delete this outfit?</div>
-              <p style={{ fontSize: 14, color: T.stone, lineHeight: 1.6, margin: "0 0 24px" }}>
+            <div style={{ paddingTop: SPACE.xl, textAlign: "center" }}>
+              <div style={{ fontFamily: serif, ...TYPE.title2, marginBottom: SPACE.sm }}>Delete this outfit?</div>
+              <p style={{ ...TYPE.subhead, color: T.stone, lineHeight: 1.6, margin: `0 0 ${SPACE.xl}px` }}>
                 This permanently removes the outfit and its photos. Can't be undone.
               </p>
-              <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+              <div style={{ display: "flex", flexDirection: "column", gap: SPACE.sm }}>
                 <button
                   onClick={async () => { await onDelete(outfit.id); onClose(); }}
                   style={{
-                    width: "100%", padding: "14px 16px", borderRadius: 8,
+                    width: "100%", minHeight: TOUCH.min, padding: `0 ${LAYOUT.screenMargin}px`, borderRadius: RADIUS.sm,
                     border: "none", background: T.bad, color: T.bone,
-                    fontFamily: mono, fontSize: 12, letterSpacing: "0.12em",
+                    fontFamily: mono, ...TYPE.caption, letterSpacing: "0.12em",
                     textTransform: "uppercase", cursor: "pointer",
                   }}
                 >Yes, delete it</button>
@@ -2616,16 +3008,18 @@ function OutfitDetail({ outfit, pieces, onClose, onDelete, onUpdate, onAddToInsp
   );
 }
 
-function MyOutfitsSection({ outfits, pieces, saveMyOutfit, removeMyOutfit, updateMyOutfit, saveInspo, flash }) {
-  const [expanded, setExpanded] = useState(false);
-  const [showAdd, setShowAdd] = useState(false);
+function MyOutfitsSection({ outfits, pieces, saveMyOutfit, removeMyOutfit, updateMyOutfit, saveInspo, flash, assessment, showAdd, setShowAdd }) {
   const [detail, setDetail] = useState(null);
   const [filterFrom, setFilterFrom] = useState("");
   const [filterTo, setFilterTo] = useState("");
   const [filterCategory, setFilterCategory] = useState("all");
   const [filterPieceId, setFilterPieceId] = useState(null);
+  const [filterProfileTag, setFilterProfileTag] = useState(null);
+
+  const profiles = assessment?.profiles || [];
 
   const filtered = outfits.filter((o) => {
+    if (filterProfileTag && o.profileTag !== filterProfileTag) return false;
     if (filterFrom && o.dateWorn < filterFrom) return false;
     if (filterTo && o.dateWorn > filterTo) return false;
     if (filterPieceId && !o.pieceIds?.includes(filterPieceId)) return false;
@@ -2660,83 +3054,79 @@ function MyOutfitsSection({ outfits, pieces, saveMyOutfit, removeMyOutfit, updat
   };
 
   return (
-    <div style={{ marginTop: 28, borderTop: `1px solid ${T.line}`, paddingTop: 20 }}>
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-        <button
-          onClick={() => setExpanded((e) => !e)}
-          style={{ background: "none", border: "none", padding: 0, cursor: "pointer", display: "flex", alignItems: "center", gap: 8 }}
-        >
-          <div style={{ fontFamily: serif, fontSize: 22, color: T.bone }}>My Outfits</div>
-          <div style={{ fontFamily: mono, fontSize: 10, color: T.faint }}>
-            {outfits.length > 0 ? `${outfits.length} · ` : ""}{expanded ? "−" : "+"}
-          </div>
-        </button>
-        {expanded && (
-          <button onClick={() => setShowAdd(true)} style={{
-            padding: "7px 12px", borderRadius: 20,
-            border: `1px solid ${T.tobacco}`, background: "none", color: T.tobacco,
-            fontFamily: mono, fontSize: 10, letterSpacing: "0.1em",
-            textTransform: "uppercase", cursor: "pointer",
-          }}>+ Add</button>
-        )}
-      </div>
+    <div>
+      <p style={{ ...TYPE.footnote, color: T.faint, margin: `0 0 ${SPACE.md}px`, lineHeight: 1.6 }}>
+        A photographic record of what you've actually worn.
+      </p>
 
-      {expanded && (
-        <div style={{ marginTop: 14, animation: "rise .25s ease" }}>
-          {outfits.length > 0 && (
-            <div style={{ marginBottom: 14 }}>
-              {usedCats.length > 0 && (
-                <div style={{ display: "flex", gap: 6, overflowX: "auto", paddingBottom: 4, marginBottom: 8 }}>
-                  <button onClick={() => setCategoryFilter("all")} style={pillStyle(filterCategory === "all")}>
-                    All {usedPieces.length}
-                  </button>
-                  {usedCats.map((c) => (
-                    <button key={c.id} onClick={() => setCategoryFilter(c.id)} style={pillStyle(filterCategory === c.id)}>
-                      {c.id} {c.count}
-                    </button>
-                  ))}
-                </div>
-              )}
-              <div style={{ display: "flex", gap: 6, overflowX: "auto", paddingBottom: 4 }}>
-                <DateRangeChip from={filterFrom} to={filterTo} onApply={(f, t) => { setFilterFrom(f); setFilterTo(t); }} />
-                <button onClick={() => setFilterPieceId(null)} style={pillStyle(filterPieceId === null)}>All</button>
-                {visiblePieces.map((p) => (
-                  <button key={p.id} onClick={() => setFilterPieceId((prev) => prev === p.id ? null : p.id)} style={pillStyle(filterPieceId === p.id)}>
-                    {p.name}
-                  </button>
-                ))}
-              </div>
-            </div>
-          )}
+      {profiles.length > 0 && (
+        <div style={{ display: "flex", gap: TOUCH.gap, overflowX: "auto", paddingBottom: SPACE.xs, marginBottom: SPACE.sm }}>
+          <button onClick={() => setFilterProfileTag(null)} style={chipHitStyle}>
+            <span style={chipVisualStyle(filterProfileTag === null)}>All</span>
+          </button>
+          {profiles.map((p) => (
+            <button key={p.rank} onClick={() => setFilterProfileTag(p.rank)} style={chipHitStyle}>
+              <span style={chipVisualStyle(filterProfileTag === p.rank)}>{p.headline}</span>
+            </button>
+          ))}
+        </div>
+      )}
 
-          {filtered.length > 0 ? (
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-              {filtered.map((o) => (
-                <OutfitCard key={o.id} outfit={o} onClick={() => setDetail(o)} />
+      {outfits.length > 0 && (
+        <div style={{ marginBottom: SPACE.md }}>
+          {usedCats.length > 0 && (
+            <div style={{ display: "flex", gap: TOUCH.gap, overflowX: "auto", paddingBottom: SPACE.xs, marginBottom: SPACE.sm }}>
+              <button onClick={() => setCategoryFilter("all")} style={chipHitStyle}>
+                <span style={chipVisualStyle(filterCategory === "all")}>All {usedPieces.length}</span>
+              </button>
+              {usedCats.map((c) => (
+                <button key={c.id} onClick={() => setCategoryFilter(c.id)} style={chipHitStyle}>
+                  <span style={chipVisualStyle(filterCategory === c.id)}>{c.id} {c.count}</span>
+                </button>
               ))}
             </div>
-          ) : outfits.length > 0 ? (
-            <div style={{ padding: "24px 0", textAlign: "center", fontFamily: mono, fontSize: 12, color: T.faint }}>
-              No outfits match those filters.
-            </div>
-          ) : (
-            <div style={{ padding: "32px 12px", textAlign: "center" }}>
-              <div style={{ fontFamily: serif, fontSize: 20, color: T.stone }}>Nothing logged yet.</div>
-              <div style={{ fontSize: 13, color: T.faint, marginTop: 8, lineHeight: 1.6 }}>
-                Add your first outfit above.
-              </div>
-            </div>
           )}
+          <div style={{ display: "flex", gap: TOUCH.gap, overflowX: "auto", paddingBottom: SPACE.xs }}>
+            <DateRangeChip from={filterFrom} to={filterTo} onApply={(f, t) => { setFilterFrom(f); setFilterTo(t); }} />
+            <button onClick={() => setFilterPieceId(null)} style={chipHitStyle}>
+              <span style={chipVisualStyle(filterPieceId === null)}>All</span>
+            </button>
+            {visiblePieces.map((p) => (
+              <button key={p.id} onClick={() => setFilterPieceId((prev) => prev === p.id ? null : p.id)} style={chipHitStyle}>
+                <span style={chipVisualStyle(filterPieceId === p.id)}>{p.name}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {filtered.length > 0 ? (
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: SPACE.sm }}>
+          {filtered.map((o) => (
+            <OutfitCard key={o.id} outfit={o} onClick={() => setDetail(o)} />
+          ))}
+        </div>
+      ) : outfits.length > 0 ? (
+        <div style={{ padding: `${SPACE.xl}px 0`, textAlign: "center", fontFamily: mono, ...TYPE.caption, color: T.faint }}>
+          No outfits match those filters.
+        </div>
+      ) : (
+        <div style={{ padding: `${SPACE.xl}px ${SPACE.md}px`, textAlign: "center" }}>
+          <div style={{ fontFamily: serif, ...TYPE.title3, color: T.stone }}>Nothing logged yet.</div>
+          <div style={{ ...TYPE.footnote, color: T.faint, marginTop: SPACE.sm, lineHeight: 1.6 }}>
+            Add your first outfit to get started.
+          </div>
         </div>
       )}
 
       {showAdd && (
-        <OutfitAddFlow pieces={pieces} onSave={saveMyOutfit} onClose={() => setShowAdd(false)} flash={flash} />
+        <OutfitAddFlow pieces={pieces} profiles={profiles} onSave={saveMyOutfit} onClose={() => setShowAdd(false)} flash={flash} />
       )}
       {detail && (
         <OutfitDetail
           outfit={detail}
           pieces={pieces}
+          profiles={profiles}
           onClose={() => setDetail(null)}
           onDelete={removeMyOutfit}
           onUpdate={updateMyOutfit}

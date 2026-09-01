@@ -864,12 +864,13 @@ function Closet({ pieces, savePiece, removePiece, updatePiece, profile, flash, o
 
   const shown = filter === "all" ? pieces : pieces.filter((p) => p.category === filter);
 
+  // approximate rendered heights of the fixed nav and the docked button (incl. its own padding)
+  const NAV_HEIGHT = 88;
+  const DOCK_HEIGHT = 68;
+
   return (
     <div>
       <input ref={fileRef} type="file" accept="image/*" multiple style={{ display: "none" }} onChange={handleFiles} />
-      <Btn onClick={() => fileRef.current.click()} disabled={busy}>
-        {busy ? "Cataloguing…" : "+ Add pieces from photos"}
-      </Btn>
       {busy && (
         <Thinking
           label={
@@ -914,7 +915,15 @@ function Closet({ pieces, savePiece, removePiece, updatePiece, profile, flash, o
           </div>
         </div>
       ) : (
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginTop: 12 }}>
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "1fr 1fr",
+            gap: 10,
+            marginTop: 12,
+            paddingBottom: `calc(${NAV_HEIGHT + DOCK_HEIGHT}px + env(safe-area-inset-bottom, 0px))`,
+          }}
+        >
           {shown.map((p) => (
             <GarmentTag key={p.id} piece={p} onMenu={() => setSheetPiece(p)} />
           ))}
@@ -933,6 +942,26 @@ function Closet({ pieces, savePiece, removePiece, updatePiece, profile, flash, o
           onBuildFit={(p) => { setSheetPiece(null); onBuildFit(p); }}
         />
       )}
+
+      <div
+        style={{
+          position: "fixed",
+          left: 0,
+          right: 0,
+          bottom: `calc(${NAV_HEIGHT}px + env(safe-area-inset-bottom, 0px))`,
+          zIndex: 40,
+          background: "rgba(27,24,21,0.92)",
+          backdropFilter: "blur(8px)",
+          WebkitBackdropFilter: "blur(8px)",
+          borderTop: `1px solid ${T.line}`,
+        }}
+      >
+        <div style={{ maxWidth: 560, margin: "0 auto", padding: "12px 16px" }}>
+          <Btn onClick={() => fileRef.current.click()} disabled={busy}>
+            {busy ? "Cataloguing…" : "+ Add pieces from photos"}
+          </Btn>
+        </div>
+      </div>
     </div>
   );
 }

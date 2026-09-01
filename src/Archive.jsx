@@ -97,6 +97,31 @@ const closetSummary = (pieces) =>
     .map((p) => `[${p.id}] ${p.name} — ${p.category}, ${p.color}, ${p.material}. ${p.vibe}`)
     .join("\n");
 
+// ———— filter chip helpers ————
+const categoryCounts = (list) =>
+  CATEGORIES.map((c) => ({ id: c, count: list.filter((p) => p.category === c).length })).filter((c) => c.count > 0);
+
+const pillStyle = (active) => ({
+  padding: "4px 10px", borderRadius: 20, whiteSpace: "nowrap",
+  border: `1px solid ${active ? T.tobacco : T.line}`,
+  background: active ? T.tobacco : "transparent",
+  color: active ? T.bg : T.stone,
+  fontFamily: mono, fontSize: 9, letterSpacing: "0.08em",
+  textTransform: "uppercase", cursor: "pointer",
+});
+
+const toggleStyle = (active) => ({
+  padding: "5px 10px", borderRadius: 20, fontSize: 11, fontFamily: mono,
+  border: `1px solid ${active ? T.tobacco : T.line}`,
+  background: active ? T.tobacco : "transparent",
+  color: active ? T.bg : T.stone, cursor: "pointer",
+});
+
+const todayIso = () => new Date().toISOString().slice(0, 10);
+const isoDaysAgo = (n) => { const d = new Date(); d.setDate(d.getDate() - n); return d.toISOString().slice(0, 10); };
+const isoMonthsAgo = (n) => { const d = new Date(); d.setMonth(d.getMonth() - n); return d.toISOString().slice(0, 10); };
+const fmtShortDate = (iso) => new Date(iso + "T12:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric" });
+
 // ————————————————————————————————————————————————
 
 export default function Archive() {
@@ -1551,7 +1576,7 @@ function Profile({ profile, saveProfile, inspo, saveInspo, removeInspo, assessme
     if (selectedInspo && !inspo.some((i) => i.id === selectedInspo.id)) setSelectedInspo(null);
   }, [inspo, selectedInspo]);
 
-  const fp = draft.trim() + "|" + inspo.map((i) => i.id).join(",");
+  const fp = draft.trim() + "|" + inspo.map((i) => i.id).join(",") + "|" + myOutfits.map((o) => o.id).join(",");
   const stale = assessment && assessment.fp !== fp;
   const unsaved = draft !== profile;
 
@@ -1565,16 +1590,39 @@ function Profile({ profile, saveProfile, inspo, saveInspo, removeInspo, assessme
       const closetNotes = pieces.length
         ? `\n\nCurrent closet:\n${closetSummary(pieces)}`
         : "";
+      // cap sample so the payload stays reasonable
+      const outfitSample = myOutfits.slice(0, 8);
+      const outfitImageBlocks = [];
+      const outfitLines = [];
+      for (const o of outfitSample) {
+        const firstId = o.imageIds?.[0];
+        if (firstId) {
+          try {
+            const dataUrl = await loadImage(firstId);
+            if (dataUrl) outfitImageBlocks.push(imgBlock(dataUrl));
+          } catch (e) {}
+        }
+        const wornNames = (o.pieceIds || [])
+          .map((id) => pieces.find((p) => p.id === id)?.name)
+          .filter(Boolean);
+        outfitLines.push(
+          `- ${o.dateWorn}${o.occasion ? " · " + o.occasion : ""}${wornNames.length ? " · " + wornNames.join(", ") : ""}${o.note ? " · " + o.note : ""}`
+        );
+      }
+      const outfitNotes = myOutfits.length
+        ? `\n\nSelf-outfit photos logged (${myOutfits.length} total):\n${outfitLines.join("\n")}`
+        : "\n\n(No self-outfit photos logged yet.)";
       const result = await askClaude(
         [
+          ...outfitImageBlocks,
           {
             type: "text",
-            text: `You are a sharp menswear stylist doing a style assessment. The client describes their style as: "${draft}"${inspoNotes}${closetNotes}\n\nSynthesize everything into an honest assessment. Where the inspo board and their self-description diverge, say so. Respond ONLY with JSON, no markdown: {"headline": "a 2-4 word name for their style identity", "read": "3-4 sentences: what their style actually is, what's consistent, what's tension or drift between stated style, inspo, and closet", "pillars": ["4 short phrases — the core codes of their style"], "blind_spot": "one sentence on a gap or risk in their current direction"}`,
+            text: `You are a sharp menswear stylist doing a style assessment. The client describes their style as: "${draft}"${inspoNotes}${closetNotes}${outfitNotes}${outfitImageBlocks.length ? "\n\n(Photos above are outfits they've actually worn.)" : ""}\n\nThey likely run more than one style lane at once — don't force everything into a single identity. Identify 2 to 4 DISTINCT style profiles across their stated style, inspo, closet, and outfit photos, ranked primary through quaternary by dominance. If they genuinely only run one coherent lane, return just that 1 profile rather than padding to reach a minimum. Judge every profile only against its own internal logic. Hard rules: never describe a profile as undermining, interrupting, or in tension with another; never use the phrase "blind spot"; never collapse multiple lanes into a single hybrid label to make the read tidier.\n\nFor each profile, give a 2-4 word headline, a 3-4 sentence read of what that lane actually looks like on its own terms (fit, palette, texture, occasion), 4 short pillar phrases, a "direction" (a short phrase for where the inspo board suggests this lane is heading, or "stable" if there's no signal), and an "activity" status — "active" if this lane shows up in the outfit photos, "dormant" if the closet supports it but it hasn't been worn. Then list shared_pieces: closet items that serve more than one profile, each tagged with which profile ranks they serve — frame these as the connective tissue holding the closet together, not as evidence of confusion.\n\nRespond ONLY with JSON, no markdown: {"profiles": [{"rank": "primary" | "secondary" | "tertiary" | "quaternary", "headline": "...", "read": "...", "pillars": ["...", "...", "...", "..."], "direction": "...", "activity": "active" | "dormant"}], "shared_pieces": [{"item": "short piece name", "profiles": ["primary", "secondary"]}]}`,
           },
         ],
-        1400
+        2000
       );
-      await saveAssessment({ ...result, fp, at: Date.now() });
+      await saveAssessment({ profiles: result.profiles, shared_pieces: result.shared_pieces || [], fp, at: Date.now() });
       flash("Assessment updated");
     } catch (e) {
       flash("Assessment failed — try again");
@@ -1661,11 +1709,11 @@ function Profile({ profile, saveProfile, inspo, saveInspo, removeInspo, assessme
       {subTab === "assessment" && (
         <div>
           <p style={{ fontSize: 13, color: T.faint, margin: "0 0 14px", lineHeight: 1.6 }}>
-            A synthesis of your written profile, inspo board, and closet — including where they disagree.
+            A synthesis of your written profile, inspo board, closet, and outfit photos — broken into the distinct style lanes actually running through your closet.
           </p>
           {stale && !assessBusy && (
             <div style={{ fontFamily: mono, fontSize: 11, color: T.tobacco, marginBottom: 10, animation: "rise .3s ease" }}>
-              Your profile or inspo changed since this assessment.
+              Your profile, inspo, or outfits changed since this assessment.
             </div>
           )}
           <Btn onClick={runAssessment} disabled={assessBusy}>
@@ -1673,43 +1721,93 @@ function Profile({ profile, saveProfile, inspo, saveInspo, removeInspo, assessme
           </Btn>
           {assessBusy && <Thinking label="Reading between your pieces…" />}
           {assessment ? (
-            <div
-              style={{
-                background: T.card,
-                border: `1px solid ${stale ? T.tobacco : T.line}`,
-                borderRadius: 10,
-                padding: "18px 16px",
-                marginTop: 16,
-                animation: "rise .3s ease",
-              }}
-            >
-              <div style={{ fontFamily: mono, fontSize: 10, letterSpacing: "0.2em", color: T.tobacco }}>THE READ</div>
-              <div style={{ fontFamily: serif, fontSize: 30, margin: "4px 0 10px" }}>{assessment.headline}</div>
-              <p style={{ fontSize: 14, lineHeight: 1.65, color: T.stone, margin: "0 0 14px" }}>{assessment.read}</p>
-              <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 14 }}>
-                {(assessment.pillars || []).map((p, i) => (
-                  <span
-                    key={i}
-                    style={{
-                      padding: "5px 11px",
-                      borderRadius: 20,
-                      border: `1px solid ${T.line}`,
-                      background: T.cardUp,
-                      fontFamily: mono,
-                      fontSize: 10,
-                      letterSpacing: "0.08em",
-                      color: T.bone,
-                      textTransform: "uppercase",
-                    }}
-                  >
-                    {p}
-                  </span>
-                ))}
-              </div>
-              {assessment.blind_spot && (
-                <div style={{ fontSize: 13, lineHeight: 1.55, color: T.stone, borderLeft: `2px solid ${T.olive}`, paddingLeft: 10 }}>
-                  <span style={{ fontFamily: mono, fontSize: 10, letterSpacing: "0.15em", color: T.olive }}>BLIND SPOT: </span>
-                  {assessment.blind_spot}
+            <div style={{ marginTop: 16, animation: "rise .3s ease" }}>
+              {(assessment.profiles || []).map((prof, idx) => (
+                <div
+                  key={idx}
+                  style={{
+                    background: T.card,
+                    border: `1px solid ${stale ? T.tobacco : T.line}`,
+                    borderRadius: 10,
+                    padding: "18px 16px",
+                    marginBottom: 14,
+                  }}
+                >
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                    <div style={{ fontFamily: mono, fontSize: 10, letterSpacing: "0.2em", color: T.tobacco }}>
+                      {(prof.rank || "").toUpperCase()}
+                    </div>
+                    {prof.activity && (
+                      <div
+                        style={{
+                          fontFamily: mono,
+                          fontSize: 9,
+                          letterSpacing: "0.1em",
+                          padding: "3px 8px",
+                          borderRadius: 20,
+                          border: `1px solid ${prof.activity === "active" ? T.olive : T.line}`,
+                          color: prof.activity === "active" ? T.olive : T.faint,
+                          textTransform: "uppercase",
+                        }}
+                      >
+                        {prof.activity}
+                      </div>
+                    )}
+                  </div>
+                  <div style={{ fontFamily: serif, fontSize: 30, margin: "4px 0 10px" }}>{prof.headline}</div>
+                  <p style={{ fontSize: 14, lineHeight: 1.65, color: T.stone, margin: "0 0 14px" }}>{prof.read}</p>
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: prof.direction ? 14 : 0 }}>
+                    {(prof.pillars || []).map((p, i) => (
+                      <span
+                        key={i}
+                        style={{
+                          padding: "5px 11px",
+                          borderRadius: 20,
+                          border: `1px solid ${T.line}`,
+                          background: T.cardUp,
+                          fontFamily: mono,
+                          fontSize: 10,
+                          letterSpacing: "0.08em",
+                          color: T.bone,
+                          textTransform: "uppercase",
+                        }}
+                      >
+                        {p}
+                      </span>
+                    ))}
+                  </div>
+                  {prof.direction && (
+                    <div style={{ fontSize: 13, lineHeight: 1.55, color: T.stone, borderLeft: `2px solid ${T.olive}`, paddingLeft: 10 }}>
+                      <span style={{ fontFamily: mono, fontSize: 10, letterSpacing: "0.15em", color: T.olive }}>DIRECTION: </span>
+                      {prof.direction}
+                    </div>
+                  )}
+                </div>
+              ))}
+              {assessment.shared_pieces?.length > 0 && (
+                <div>
+                  <div style={{ fontFamily: mono, fontSize: 10, letterSpacing: "0.2em", color: T.tobacco, marginBottom: 8 }}>
+                    SHARED PIECES
+                  </div>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                    {assessment.shared_pieces.map((sp, i) => (
+                      <div
+                        key={i}
+                        style={{
+                          fontSize: 13,
+                          lineHeight: 1.5,
+                          color: T.stone,
+                          background: T.card,
+                          border: `1px solid ${T.line}`,
+                          borderRadius: 8,
+                          padding: "10px 12px",
+                        }}
+                      >
+                        <span style={{ color: T.bone }}>{sp.item}</span>
+                        <span style={{ color: T.faint }}> — holds together {(sp.profiles || []).join(" + ")}</span>
+                      </div>
+                    ))}
+                  </div>
                 </div>
               )}
             </div>
@@ -1717,7 +1815,7 @@ function Profile({ profile, saveProfile, inspo, saveInspo, removeInspo, assessme
             <div style={{ padding: "48px 12px", textAlign: "center" }}>
               <div style={{ fontFamily: serif, fontSize: 22, color: T.stone }}>No assessment yet.</div>
               <div style={{ fontSize: 13, color: T.faint, marginTop: 8, lineHeight: 1.6 }}>
-                Fill in your style profile and run the assessment to get your style identity.
+                Fill in your style profile and run the assessment to see the style lanes running through your closet.
               </div>
             </div>
           ) : null}
@@ -1946,6 +2044,159 @@ function OutfitCard({ outfit, onClick }) {
   );
 }
 
+function PiecePicker({ pieces, selectedIds, onToggle, label }) {
+  const [category, setCategory] = useState("all");
+  const [search, setSearch] = useState("");
+
+  const cats = categoryCounts(pieces);
+  const selectedSet = new Set(selectedIds);
+  const selectedPieces = pieces.filter((p) => selectedSet.has(p.id));
+  const q = search.trim().toLowerCase();
+  const unselected = pieces.filter((p) => {
+    if (selectedSet.has(p.id)) return false;
+    if (category !== "all" && p.category !== category) return false;
+    if (q && !p.name.toLowerCase().includes(q)) return false;
+    return true;
+  });
+
+  // reset the filter so the next pick starts from a clean list
+  const handleToggle = (id) => {
+    const wasSelected = selectedSet.has(id);
+    onToggle(id);
+    if (!wasSelected) {
+      setCategory("all");
+      setSearch("");
+    }
+  };
+
+  return (
+    <div style={{ marginBottom: 14 }}>
+      {label && (
+        <div style={{ fontFamily: mono, fontSize: 10, letterSpacing: "0.14em", color: T.faint, marginBottom: 6 }}>
+          {label}
+        </div>
+      )}
+      <input
+        value={search}
+        onChange={(e) => setSearch(e.target.value)}
+        placeholder="Search pieces…"
+        style={{
+          width: "100%", padding: "8px 10px", borderRadius: 6,
+          border: `1px solid ${T.line}`, background: T.cardUp,
+          color: T.bone, fontSize: 12, fontFamily: sans, marginBottom: 8,
+        }}
+      />
+      <div style={{ display: "flex", gap: 6, overflowX: "auto", paddingBottom: 4, marginBottom: 8 }}>
+        <button onClick={() => setCategory("all")} style={pillStyle(category === "all")}>All {pieces.length}</button>
+        {cats.map((c) => (
+          <button key={c.id} onClick={() => setCategory(c.id)} style={pillStyle(category === c.id)}>
+            {c.id} {c.count}
+          </button>
+        ))}
+      </div>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+        {selectedPieces.length > 0 && (
+          <>
+            <div style={{ width: "100%", fontFamily: mono, fontSize: 9, letterSpacing: "0.14em", color: T.tobacco }}>
+              SELECTED
+            </div>
+            {selectedPieces.map((p) => (
+              <button key={p.id} onClick={() => handleToggle(p.id)} style={toggleStyle(true)}>{p.name}</button>
+            ))}
+            {unselected.length > 0 && <div style={{ width: "100%", height: 1, background: T.line, margin: "2px 0" }} />}
+          </>
+        )}
+        {unselected.length > 0 ? (
+          unselected.map((p) => (
+            <button key={p.id} onClick={() => handleToggle(p.id)} style={toggleStyle(false)}>{p.name}</button>
+          ))
+        ) : selectedPieces.length === 0 ? (
+          <div style={{ fontFamily: mono, fontSize: 11, color: T.faint, padding: "8px 0" }}>No pieces match.</div>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+function DateRangeChip({ from, to, onApply }) {
+  const [open, setOpen] = useState(false);
+  const [draftFrom, setDraftFrom] = useState(from);
+  const [draftTo, setDraftTo] = useState(to);
+
+  useEffect(() => { setDraftFrom(from); setDraftTo(to); }, [from, to, open]);
+
+  const active = !!(from || to);
+  const label = !from && !to
+    ? "All dates"
+    : from && to
+    ? `${fmtShortDate(from)} – ${fmtShortDate(to)}`
+    : from
+    ? `Since ${fmtShortDate(from)}`
+    : `Until ${fmtShortDate(to)}`;
+
+  const presets = [
+    { label: "Last 30 days", range: () => [isoDaysAgo(30), todayIso()] },
+    { label: "Last 3 months", range: () => [isoMonthsAgo(3), todayIso()] },
+    { label: "This year", range: () => [`${new Date().getFullYear()}-01-01`, todayIso()] },
+    { label: "All time", range: () => ["", ""] },
+  ];
+
+  const applyPreset = (preset) => {
+    const [f, t] = preset.range();
+    onApply(f, t);
+    setOpen(false);
+  };
+
+  return (
+    <div style={{ position: "relative", flexShrink: 0 }}>
+      <button onClick={() => setOpen((o) => !o)} style={pillStyle(active)}>{label}</button>
+      {open && (
+        <>
+          <div onClick={() => setOpen(false)} style={{ position: "fixed", inset: 0, zIndex: 90 }} />
+          <div style={{
+            position: "absolute", top: "calc(100% + 6px)", left: 0, zIndex: 91,
+            width: 220, background: T.cardUp, border: `1px solid ${T.line}`,
+            borderRadius: 10, padding: 12, boxShadow: "0 12px 28px rgba(0,0,0,.45)",
+          }}>
+            <div style={{ display: "flex", flexDirection: "column", gap: 2, marginBottom: 10 }}>
+              {presets.map((p) => (
+                <button key={p.label} onClick={() => applyPreset(p)} style={{
+                  textAlign: "left", padding: "7px 8px", borderRadius: 6,
+                  border: "none", background: "none", color: T.stone,
+                  fontFamily: mono, fontSize: 11, cursor: "pointer",
+                }}>{p.label}</button>
+              ))}
+            </div>
+            <div style={{ height: 1, background: T.line, margin: "4px 0 10px" }} />
+            <div style={{ fontFamily: mono, fontSize: 9, letterSpacing: "0.12em", color: T.faint, marginBottom: 4 }}>FROM</div>
+            <input type="date" value={draftFrom} onChange={(e) => setDraftFrom(e.target.value)} style={{
+              width: "100%", padding: "7px 8px", borderRadius: 6, border: `1px solid ${T.line}`,
+              background: T.card, color: T.bone, fontSize: 12, fontFamily: sans, marginBottom: 8, colorScheme: "dark",
+            }} />
+            <div style={{ fontFamily: mono, fontSize: 9, letterSpacing: "0.12em", color: T.faint, marginBottom: 4 }}>TO</div>
+            <input type="date" value={draftTo} onChange={(e) => setDraftTo(e.target.value)} style={{
+              width: "100%", padding: "7px 8px", borderRadius: 6, border: `1px solid ${T.line}`,
+              background: T.card, color: T.bone, fontSize: 12, fontFamily: sans, marginBottom: 10, colorScheme: "dark",
+            }} />
+            <div style={{ display: "flex", gap: 8 }}>
+              <button onClick={() => { onApply("", ""); setOpen(false); }} style={{
+                flex: 1, padding: "8px 0", borderRadius: 6, border: `1px solid ${T.line}`,
+                background: "none", color: T.faint, fontFamily: mono, fontSize: 10,
+                letterSpacing: "0.08em", textTransform: "uppercase", cursor: "pointer",
+              }}>Clear</button>
+              <button onClick={() => { onApply(draftFrom, draftTo); setOpen(false); }} style={{
+                flex: 1, padding: "8px 0", borderRadius: 6, border: "none",
+                background: T.tobacco, color: T.bg, fontFamily: mono, fontSize: 10,
+                letterSpacing: "0.08em", textTransform: "uppercase", cursor: "pointer",
+              }}>Apply</button>
+            </div>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 function OutfitAddFlow({ pieces, onSave, onClose, flash }) {
   const cameraRef = useRef();
   const libRef = useRef();
@@ -2092,22 +2343,7 @@ function OutfitAddFlow({ pieces, onSave, onClose, flash }) {
               />
 
               {pieces.length > 0 && (
-                <>
-                  {fieldLabel("PIECES WORN — tap to link")}
-                  <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 14 }}>
-                    {pieces.map((p) => {
-                      const on = pieceIds.includes(p.id);
-                      return (
-                        <button key={p.id} onClick={() => togglePiece(p.id)} style={{
-                          padding: "5px 10px", borderRadius: 20, fontSize: 11, fontFamily: mono,
-                          border: `1px solid ${on ? T.tobacco : T.line}`,
-                          background: on ? T.tobacco : "transparent",
-                          color: on ? T.bg : T.stone, cursor: "pointer",
-                        }}>{p.name}</button>
-                      );
-                    })}
-                  </div>
-                </>
+                <PiecePicker pieces={pieces} selectedIds={pieceIds} onToggle={togglePiece} label="PIECES WORN — tap to link" />
               )}
 
               {fieldLabel("OCCASION (optional)")}
@@ -2136,6 +2372,11 @@ function OutfitAddFlow({ pieces, onSave, onClose, flash }) {
                 }}
               />
 
+              {pieceIds.length > 0 && (
+                <div style={{ fontFamily: mono, fontSize: 10, color: T.faint, marginBottom: 8 }}>
+                  {pieceIds.length} piece{pieceIds.length === 1 ? "" : "s"} selected
+                </div>
+              )}
               <Btn onClick={handleSave} disabled={saving || !staged.length}>
                 {saving ? "Saving…" : "Save outfit"}
               </Btn>
@@ -2278,22 +2519,7 @@ function OutfitDetail({ outfit, pieces, onClose, onDelete, onUpdate, onAddToInsp
                 }}
               />
               {pieces.length > 0 && (
-                <>
-                  {fieldLabel("PIECES WORN")}
-                  <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 14 }}>
-                    {pieces.map((p) => {
-                      const on = editPieceIds.includes(p.id);
-                      return (
-                        <button key={p.id} onClick={() => toggleEditPiece(p.id)} style={{
-                          padding: "5px 10px", borderRadius: 20, fontSize: 11, fontFamily: mono,
-                          border: `1px solid ${on ? T.tobacco : T.line}`,
-                          background: on ? T.tobacco : "transparent",
-                          color: on ? T.bg : T.stone, cursor: "pointer",
-                        }}>{p.name}</button>
-                      );
-                    })}
-                  </div>
-                </>
+                <PiecePicker pieces={pieces} selectedIds={editPieceIds} onToggle={toggleEditPiece} label="PIECES WORN" />
               )}
               {fieldLabel("OCCASION")}
               <input
@@ -2319,6 +2545,11 @@ function OutfitDetail({ outfit, pieces, onClose, onDelete, onUpdate, onAddToInsp
                   marginBottom: 16, lineHeight: 1.5,
                 }}
               />
+              {editPieceIds.length > 0 && (
+                <div style={{ fontFamily: mono, fontSize: 10, color: T.faint, marginBottom: 8 }}>
+                  {editPieceIds.length} piece{editPieceIds.length === 1 ? "" : "s"} selected
+                </div>
+              )}
               <Btn onClick={handleSave} disabled={saving}>{saving ? "Saving…" : "Save changes"}</Btn>
             </div>
           )}
@@ -2355,6 +2586,7 @@ function MyOutfitsSection({ outfits, pieces, saveMyOutfit, removeMyOutfit, updat
   const [detail, setDetail] = useState(null);
   const [filterFrom, setFilterFrom] = useState("");
   const [filterTo, setFilterTo] = useState("");
+  const [filterCategory, setFilterCategory] = useState("all");
   const [filterPieceId, setFilterPieceId] = useState(null);
 
   const filtered = outfits.filter((o) => {
@@ -2366,6 +2598,10 @@ function MyOutfitsSection({ outfits, pieces, saveMyOutfit, removeMyOutfit, updat
 
   // only show pieces that appear in at least one outfit
   const usedPieces = pieces.filter((p) => outfits.some((o) => o.pieceIds?.includes(p.id)));
+  const usedCats = categoryCounts(usedPieces);
+  const visiblePieces = usedPieces.filter((p) => filterCategory === "all" || p.category === filterCategory);
+  // the selected piece chip may not be visible after switching categories
+  const setCategoryFilter = (c) => { setFilterCategory(c); setFilterPieceId(null); };
 
   const handleAddToInspo = async (outfit) => {
     try {
@@ -2413,58 +2649,27 @@ function MyOutfitsSection({ outfits, pieces, saveMyOutfit, removeMyOutfit, updat
         <div style={{ marginTop: 14, animation: "rise .25s ease" }}>
           {outfits.length > 0 && (
             <div style={{ marginBottom: 14 }}>
-              <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
-                <input
-                  type="date"
-                  value={filterFrom}
-                  onChange={(e) => setFilterFrom(e.target.value)}
-                  style={{
-                    flex: 1, padding: "8px 10px", borderRadius: 6,
-                    border: `1px solid ${T.line}`, background: T.cardUp,
-                    color: filterFrom ? T.bone : T.faint,
-                    fontSize: 12, fontFamily: sans, colorScheme: "dark",
-                  }}
-                />
-                <input
-                  type="date"
-                  value={filterTo}
-                  onChange={(e) => setFilterTo(e.target.value)}
-                  style={{
-                    flex: 1, padding: "8px 10px", borderRadius: 6,
-                    border: `1px solid ${T.line}`, background: T.cardUp,
-                    color: filterTo ? T.bone : T.faint,
-                    fontSize: 12, fontFamily: sans, colorScheme: "dark",
-                  }}
-                />
-                {(filterFrom || filterTo) && (
-                  <button
-                    onClick={() => { setFilterFrom(""); setFilterTo(""); }}
-                    style={{ border: "none", background: "none", color: T.faint, fontSize: 16, cursor: "pointer", padding: "0 4px" }}
-                  >×</button>
-                )}
-              </div>
-              {usedPieces.length > 0 && (
-                <div style={{ display: "flex", gap: 6, overflowX: "auto", paddingBottom: 4 }}>
-                  <button onClick={() => setFilterPieceId(null)} style={{
-                    padding: "4px 10px", borderRadius: 20, whiteSpace: "nowrap",
-                    border: `1px solid ${filterPieceId === null ? T.tobacco : T.line}`,
-                    background: filterPieceId === null ? T.tobacco : "transparent",
-                    color: filterPieceId === null ? T.bg : T.stone,
-                    fontFamily: mono, fontSize: 9, letterSpacing: "0.08em",
-                    textTransform: "uppercase", cursor: "pointer",
-                  }}>All</button>
-                  {usedPieces.map((p) => (
-                    <button key={p.id} onClick={() => setFilterPieceId((prev) => prev === p.id ? null : p.id)} style={{
-                      padding: "4px 10px", borderRadius: 20, whiteSpace: "nowrap",
-                      border: `1px solid ${filterPieceId === p.id ? T.tobacco : T.line}`,
-                      background: filterPieceId === p.id ? T.tobacco : "transparent",
-                      color: filterPieceId === p.id ? T.bg : T.stone,
-                      fontFamily: mono, fontSize: 9, letterSpacing: "0.08em",
-                      textTransform: "uppercase", cursor: "pointer",
-                    }}>{p.name}</button>
+              {usedCats.length > 0 && (
+                <div style={{ display: "flex", gap: 6, overflowX: "auto", paddingBottom: 4, marginBottom: 8 }}>
+                  <button onClick={() => setCategoryFilter("all")} style={pillStyle(filterCategory === "all")}>
+                    All {usedPieces.length}
+                  </button>
+                  {usedCats.map((c) => (
+                    <button key={c.id} onClick={() => setCategoryFilter(c.id)} style={pillStyle(filterCategory === c.id)}>
+                      {c.id} {c.count}
+                    </button>
                   ))}
                 </div>
               )}
+              <div style={{ display: "flex", gap: 6, overflowX: "auto", paddingBottom: 4 }}>
+                <DateRangeChip from={filterFrom} to={filterTo} onApply={(f, t) => { setFilterFrom(f); setFilterTo(t); }} />
+                <button onClick={() => setFilterPieceId(null)} style={pillStyle(filterPieceId === null)}>All</button>
+                {visiblePieces.map((p) => (
+                  <button key={p.id} onClick={() => setFilterPieceId((prev) => prev === p.id ? null : p.id)} style={pillStyle(filterPieceId === p.id)}>
+                    {p.name}
+                  </button>
+                ))}
+              </div>
             </div>
           )}
 

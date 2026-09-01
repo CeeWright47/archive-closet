@@ -882,7 +882,7 @@ function Closet({ pieces, savePiece, removePiece, updatePiece, profile, flash, o
       )}
 
       {pieces.length > 0 && (
-        <div style={{ display: "flex", gap: 6, margin: "16px 0 4px", overflowX: "auto", paddingBottom: 4 }}>
+        <div style={{ display: "flex", gap: 6, margin: "4px 0 4px", overflowX: "auto", paddingBottom: 4 }}>
           {["all", ...CATEGORIES].map((c) => (
             <button
               key={c}
@@ -948,7 +948,8 @@ function Closet({ pieces, savePiece, removePiece, updatePiece, profile, flash, o
           position: "fixed",
           left: 0,
           right: 0,
-          bottom: `calc(${NAV_HEIGHT}px + env(safe-area-inset-bottom, 0px))`,
+          // sits flush against the nav's top edge — slight overlap absorbed by the nav's higher z-index/opaque bg, never a gap
+          bottom: `${NAV_HEIGHT - 2}px`,
           zIndex: 40,
           background: "rgba(27,24,21,0.92)",
           backdropFilter: "blur(8px)",
@@ -956,7 +957,7 @@ function Closet({ pieces, savePiece, removePiece, updatePiece, profile, flash, o
           borderTop: `1px solid ${T.line}`,
         }}
       >
-        <div style={{ maxWidth: 560, margin: "0 auto", padding: "12px 16px" }}>
+        <div style={{ maxWidth: 560, margin: "0 auto", padding: "12px 16px 14px" }}>
           <Btn onClick={() => fileRef.current.click()} disabled={busy}>
             {busy ? "Cataloguing…" : "+ Add pieces from photos"}
           </Btn>
